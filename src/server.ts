@@ -76,6 +76,7 @@ async function main() {
       pointsPerRequest: config.pointsPerRequest,
       requestsPerToken: Math.floor(config.pointsPerToken / config.pointsPerRequest),
       refillBufferRequests: config.refillBufferRequests,
+      sessionTopUpThreshold: config.sessionTopUpThreshold,
     });
   });
 
@@ -191,6 +192,40 @@ async function main() {
     }
 
     res.set('WWW-Authenticate', 'PrivateToken').status(401).end();
+  });
+
+  // Proactive session top-up. The service worker calls this (with a token) to
+  // ADD points to its current session BEFORE it drains — so media requests that
+  // bypass the SW (video/audio element range requests) always find a funded
+  // session to ride at the nginx gate, even though they can't trigger the SW's
+  // reactive per-request renewal. Adds to the existing session (stable cookie)
+  // when one is present, otherwise opens a new one.
+  app.post('/pp/refill', async (req, res) => {
+    const result = await pp.verifyHeader(req.header('authorization'));
+    if (result.status !== 'ok') {
+      res.status(401).json({ error: result.status });
+      return;
+    }
+    const sid = readCookie(req.header('cookie'), config.sessionCookie);
+    if (sid) {
+      const points = store.topUpSession(sid, config.pointsPerToken);
+      if (points !== null) {
+        res.set('X-PP-Points', String(points)).json({ points });
+        return;
+      }
+    }
+    // No live session — open one and set the cookie.
+    const newId = randomBytes(16).toString('hex');
+    store.createSession(newId, config.pointsPerToken);
+    res
+      .set(
+        'Set-Cookie',
+        `${config.sessionCookie}=${newId}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(
+          config.sessionMaxAgeMs / 1000,
+        )}`,
+      )
+      .set('X-PP-Points', String(config.pointsPerToken))
+      .json({ points: config.pointsPerToken });
   });
 
   // Operator bypass: exchange the shared password for a signed bypass cookie

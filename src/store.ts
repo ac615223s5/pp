@@ -125,6 +125,17 @@ export class Store {
       .run(id, points, Date.now());
   }
 
+  // Atomically ADD points to an existing session (a proactive top-up: the SW
+  // redeems a token to keep a live session funded so media requests — which
+  // bypass the SW and can't self-renew — keep riding it). Returns the new
+  // balance, or null if the session doesn't exist (caller opens a fresh one).
+  topUpSession(id: string, delta: number): number | null {
+    const row = this.db
+      .prepare('UPDATE sessions SET points = points + ? WHERE id = ? RETURNING points')
+      .get(delta, id) as { points: number } | undefined;
+    return row ? row.points : null;
+  }
+
   // Atomically draw `cost` points from a session. Returns the remaining balance,
   // or null if the session is unknown or can't cover the cost (caller then falls
   // back to a token). RETURNING makes the debit-and-read a single statement.

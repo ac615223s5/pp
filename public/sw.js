@@ -11,10 +11,12 @@ const DB_NAME = 'pp-tokens';
 const STORE = 'tokens';
 
 // Assets nginx serves without auth_request — don't waste a token on them.
-// Includes streaming media: video players fire many concurrent segment requests,
-// which per-request gating (esp. at small sessions) can't keep up with.
-const STATIC_RE =
-  /\.(?:css|js|mjs|map|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|eot|mp4|m4v|webm|m4s|m3u8|ts|m4a|mp3|aac|ogg|opus|wav|flac|vtt|srt)(?:\?|$)/i;
+// Scripts, styles, fonts, and UI vector/icon assets ONLY. Images and streaming
+// media are deliberately excluded so they meter: scrapers were fetching reddit
+// image/video links directly through us, bypassing the gate. Images go through
+// the SW like any GET (per-request ride/spend); video/audio bypass the SW
+// entirely, so they ride a session the SW keeps topped up (see topUp()).
+const STATIC_RE = /\.(?:css|js|mjs|map|svg|ico|woff2?|ttf|eot)(?:\?|$)/i;
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
@@ -132,6 +134,50 @@ function renewSession() {
   return sessionRenewal;
 }
 
+// Proactive session top-up. Media (video/audio) bypasses the SW and rides the
+// session directly at the nginx gate, but can't trigger the reactive renewal
+// above — so we keep the session FUNDED ahead of time. When a metered response
+// reports the balance dropping below sessionTopUpThreshold, spend one token to
+// ADD points to the live session (POST /pp/refill, which keeps the same cookie).
+// Single-flight so a burst of low-balance responses coalesces into one token.
+let sessionTopUp = null;
+
+function topUp() {
+  if (!sessionTopUp) {
+    sessionTopUp = (async () => {
+      const db = await openDB();
+      for (let tries = 0; tries < 16; tries++) {
+        const token = await popToken(db);
+        if (!token) return false; // pool empty — nothing to top up with
+        const headers = new Headers();
+        headers.set('X-PP-SW', '1');
+        headers.set('Authorization', `PrivateToken token="${token}"`);
+        const r = await fetch('/pp/refill', { method: 'POST', headers }).catch(() => null);
+        broadcast({ type: 'pp-remaining', remaining: await countTokens(db) });
+        if (r && r.status === 401) continue; // dead/spent token — try the next
+        return !!(r && r.ok);
+      }
+      return false;
+    })().finally(() => {
+      sessionTopUp = null;
+    });
+  }
+  return sessionTopUp;
+}
+
+// If a metered response shows the session running low, fund it (non-blocking so
+// the current response isn't delayed). Exempt assets have no X-PP-Points header.
+async function maybeTopUp(res, event) {
+  const hdr = res.headers.get('X-PP-Points');
+  if (!hdr) return; // absent/empty => not a metered response
+  const points = Number(hdr);
+  if (!Number.isFinite(points)) return;
+  const cfg = await getConfig();
+  const threshold = (cfg && cfg.sessionTopUpThreshold) || 200000;
+  if (points >= threshold) return;
+  event.waitUntil(topUp());
+}
+
 // Metering config (requests-per-token, refill buffer), fetched once and cached.
 let configPromise = null;
 function getConfig() {
@@ -182,7 +228,10 @@ async function handle(event) {
 
   // 1. Try riding the current session cookie.
   let res = await ride(request);
-  if (res.status !== 401) return res;
+  if (res.status !== 401) {
+    maybeTopUp(res, event); // keep the session funded for SW-invisible media
+    return res;
+  }
 
   // 2. No live session (first request, or it drained). Renew (coalesced across
   //    the concurrent herd — one token per session) and re-ride, at most twice.
@@ -191,7 +240,10 @@ async function handle(event) {
     const opened = await attempt;
     if (!opened) return exhausted(request, event);
     res = await ride(request);
-    if (res.status !== 401) return res;
+    if (res.status !== 401) {
+      maybeTopUp(res, event);
+      return res;
+    }
     // Still 401: the session we rode is already drained — drop this settled
     // attempt so the next renewSession() opens another, then retry once more.
     if (sessionRenewal === attempt) sessionRenewal = null;
@@ -211,3 +263,22 @@ self.addEventListener('fetch', (event) => {
 
   event.respondWith(handle(event));
 });
+
+// Best-effort proactive top-up while the SW is alive. NOTE: browsers terminate
+// idle service workers (~30s), so this timer does NOT reliably run during pure
+// media playback with no other requests — the header-driven maybeTopUp() and the
+// large per-token session buffer are the real safeguards. This only helps when
+// the SW is otherwise kept warm by ongoing activity.
+async function checkAndTopUp() {
+  const cfg = await getConfig();
+  const threshold = (cfg && cfg.sessionTopUpThreshold) || 200000;
+  const r = await fetch('/pp/points')
+    .then((x) => x.json())
+    .catch(() => null);
+  if (!r) return;
+  // Only maintain an EXISTING draining session; a drained/absent one (points 0)
+  // is handled by the reactive renewal on the next real request.
+  if (r.points > 0 && r.points < threshold) await topUp();
+}
+
+setInterval(checkAndTopUp, 10000);

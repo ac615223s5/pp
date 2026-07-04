@@ -29,6 +29,12 @@ export const config = {
   // new navigations are steered to re-activate, but the buffer stays spendable so
   // in-flight page loads (which fire many sub-requests at once) still complete.
   refillBufferRequests: Number(process.env.PP_REFILL_BUFFER_REQUESTS ?? 5_000),
+  // Proactive session top-up threshold (in POINTS). When a live session's
+  // balance drops below this, the SW spends a token to add pointsPerToken to it
+  // — keeping it funded for SW-invisible media (video/audio) that rides the
+  // session at the nginx gate but can't trigger the SW's reactive renewal.
+  // Default 200_000 = 200 requests of headroom at the 1_000/request rate.
+  sessionTopUpThreshold: Number(process.env.PP_SESSION_TOPUP_THRESHOLD ?? 200_000),
   // sessions with fewer than one request's worth of points, or older than this,
   // are swept periodically.
   sessionMaxAgeMs: Number(process.env.PP_SESSION_MAX_AGE_MS ?? 30 * 24 * 3600 * 1000),
