@@ -4,9 +4,10 @@ An initial, single-IP deployment of the Privacy Pass (IETF RFC 9578, **Type 2 /
 Blind RSA 2048**) bot-protection layer described in `../privacy-pass-handoff.md`.
 
 The operator issues invite codes; each code grants a batch of anonymous tokens.
-After a one-time activation in the browser, a service worker attaches a token to
-each page request. The server can verify a request carries a valid token but
-**cannot link any redemption to the invite code or issuance event** — blind
+After a one-time activation in the browser, a service worker spends tokens
+lazily: it rides a **points-metered session cookie**, and only redeems a token
+when the session runs out. The server can verify a request carries a valid token
+but **cannot link any redemption to the invite code or issuance event** — blind
 issuance guarantees this cryptographically.
 
 ## What this initial version does and does NOT do
@@ -17,25 +18,36 @@ issuance guarantees this cryptographically.
 - ✅ Activation page + service worker + IndexedDB token pool.
 - ✅ nginx `auth_request` integration, **gated to one client IP** (`24.150.9.204`),
      **never** gated for the LAN (`192.168.88.0/24`) or anyone else.
-- ❌ **No session window.** Every gated page view / dynamic GET spends one token.
-     (The handoff's session-window optimisation is deliberately omitted for now.)
+- ✅ **Points-metered sessions.** One token opens a session worth
+     `pointsPerToken` (default 1e6); each request draws `pointsPerRequest`
+     (default 1000) → **~1000 requests per token**. Cost stays linear in requests
+     (unlike a time window, a bot can't amortise). See *Points-metered sessions*.
+- ✅ **Web Worker-parallelised activation** + native raw-RSA signing, so big
+     quotas (~10k) are practical.
+- ✅ **Operator bypass password**, **token export/import**, **balance page**,
+     and an early-**refill buffer** (all below).
 - ❌ **No key rotation overlap.** One key epoch; regenerating keys invalidates all
-     outstanding tokens.
+     outstanding tokens *and* bypass cookies.
 - ❌ GET requests only are gated (Quetre is read-only). Non-GET from the gated IP
-     without a token gets a 401.
+     without a live session gets a 401.
 
 ## Architecture
 
 ```
-Browser ──(SW adds Authorization: PrivateToken)──► nginx (quetre server block)
-                                                     │  $pp_gate==1 only
-                                                     ▼  auth_request /pp/verify
-                                              privacy-pass container
-                                              172.33.0.1:8017  (host 8017 → 8787)
-                                              ├─ /verify  sig check + atomic spent-set
-                                              ├─ /pp/issue    blind-sign a batch
-                                              ├─ /pp/token-key issuer public key
-                                              └─ /pp/activate  page + sw.js + activate.js
+Browser SW ── ride session cookie (X-PP-SW) ──► nginx (quetre server block)
+     │         on 401, redeem 1 token instead     │  $pp_gate==1 only
+     ▼                                             ▼  auth_request /pp/verify
+  IndexedDB token pool                       privacy-pass container
+                                             172.33.0.1:8017  (host 8017 → 8787)
+                                             ├─ /verify   meter session pts, else
+                                             │            redeem token → Set-Cookie
+                                             ├─ /pp/issue     blind-sign a batch
+                                             ├─ /pp/token-key  issuer public key
+                                             ├─ /pp/config     metering params
+                                             ├─ /pp/points     session balance
+                                             ├─ /pp/bypass     password → bypass cookie
+                                             └─ /pp/activate   page + sw.js + activate.js
+                                                              + status.html + pp-worker.js
 ```
 
 - The gate lives in the **local** nginx `http{}` block, i.e. **after TLS
@@ -44,15 +56,20 @@ Browser ──(SW adds Authorization: PrivateToken)──► nginx (quetre serve
   (same convention as every other pepperbox service), *not* `127.0.0.1`.
 - Signature verification checks the Blind RSA signature only (no challenge/origin
   binding); replay is prevented by hashing the token into a SQLite spent-set.
+- nginx forwards the `Cookie` to `/verify` and propagates the `Set-Cookie` it
+  mints back to the browser via `auth_request_set`.
 
 ## Files
 
 ```
-src/config.ts   env config          src/pp.ts      issue/verify facade
-src/store.ts    SQLite (codes+spent) src/server.ts  HTTP routes
-src/keys.ts     keypair gen/persist  src/admin.ts   invite-code CLI
-client/activate.ts  bundled → public/activate.js (blind/unblind in-browser)
-public/activate.html  activation UI  public/sw.js   token-attaching service worker
+src/config.ts   env config           src/pp.ts      issue/verify facade
+src/store.ts    SQLite: codes +       src/server.ts  HTTP routes (/verify, /pp/*)
+                spent-set + sessions   src/admin.ts   code + bypass-link CLI
+src/keys.ts     keypair + bypass HMAC  src/bypass.ts  stateless bypass cookie (HMAC)
+client/activate.ts  bundled → public/activate.js (activation + bypass password)
+client/pp-worker.ts bundled → public/pp-worker.js (parallel blind/unblind)
+public/activate.html  activation UI   public/sw.js   lazy-spend service worker
+public/status.html    balance + token export/import
 data/           mounted volume: pp.db (SQLite) + keys/ (RSA keypair)  ← secrets
 ```
 
@@ -90,9 +107,10 @@ clearing site data or switching device/browser needs a new code. Codes **stack**
 so a user can add more later. Users without a code can request one via the Matrix
 link on the activation page.
 
-Because there is no session window, a code's quota is consumed roughly one token
-per page view. Size quotas accordingly; keep them modest until a session window
-exists (blind-signing thousands of tokens in the browser is also slow).
+With points-metered sessions, one token covers `pointsPerToken/pointsPerRequest`
+requests (default 1000), so a 500-token code ≈ 500k requests. Activation
+blind-signs `quota` tokens in the browser (parallelised across Web Workers), so
+very large quotas still take time — size to expected usage.
 
 ## Bypass password (operator escape hatch)
 
@@ -122,19 +140,51 @@ site data.
   the link puts it in a URL, prefer pasting it on the page over sharing the URL
   through anything that logs referrers/history.
 
+## Points-metered sessions
+
+Redeeming one token opens a **session**: a random id stored server-side (SQLite
+`sessions` table) with a starting balance of `PP_POINTS_PER_TOKEN` points, handed
+to the browser as an HttpOnly `pp_session` cookie. Each gated request draws
+`PP_POINTS_PER_REQUEST` points (atomic `UPDATE … RETURNING`). When the balance
+can't cover a request the verifier answers `401`, and the service worker spends
+another token to open a fresh session.
+
+- **Lazy spend.** The SW rides the cookie first (marked `X-PP-SW: 1` so nginx
+  answers a drained/missing session with `401` rather than an activate redirect),
+  and only redeems a token on `401`. One token ≈ 1000 requests.
+- **Single-flight renewal.** A page load fires many requests at once, so a
+  mid-load drain would 401 several of them. The SW coalesces these into **one**
+  token spend (`sessionRenewal`), so a session boundary costs exactly one token,
+  and the page keeps loading — no broken sub-resources.
+- **Spent-token resilience.** On renewal the SW pops tokens until one opens a
+  session, discarding any already-spent ones (e.g. from an imported, partly-used
+  pool), bounded so a fully-spent pool can't spin.
+- **Privacy trade-off.** The ~1000 requests within one session are mutually
+  linkable via the cookie, but sessions are unlinkable to each other and to
+  issuance (random id, blind tokens). Set `PP_POINTS_PER_TOKEN ==
+  PP_POINTS_PER_REQUEST` to fall back to one-token-per-request (max anonymity).
+
 ## Checking balance & running out
 
 - **Balance:** visit `https://<gated-host>/pp/status.html` — a first-party page
-  that reads the same IndexedDB pool the service worker spends from, so it works
-  for whatever service is gated on that host with **no change to the proxied
-  app**. The service worker also stamps an `X-PP-Remaining` header on every gated
-  response (visible in devtools).
-- **Exhaustion is graceful:** when the pool empties, a top-level navigation
-  redirects to `/pp/activate?exhausted=1`. If it runs out on a sub-resource
-  mid-page (e.g. a proxied image), the service worker uses `WindowClient.navigate`
-  to send the owning tab to the activation page rather than leaving a broken page.
-  (Note: with per-request gating, each proxied image spends a token, so
-  image-heavy pages burn several tokens per view.)
+  showing **total requests remaining** = pooled tokens × requests-per-token +
+  the current session's points. It reads the IndexedDB pool directly and the
+  session balance via `/pp/points` (the cookie is HttpOnly, so only the server
+  can read it). Works for whatever service is gated on that host with **no change
+  to the proxied app**.
+- **Move tokens between devices:** the status page can **export** your unspent
+  tokens to the clipboard (`{pp:1, origin, tokens}` JSON) and **import** them on
+  another browser/device (deduped, so re-importing your own pool is a no-op).
+  Exported tokens are **bearer credentials** — whoever holds the text can spend
+  them; the current session's points are not exported.
+- **Refill buffer:** once the pool is within `PP_REFILL_BUFFER_REQUESTS` (default
+  5000, = 5 tokens) of empty, the SW steers new **navigations** to
+  `/pp/activate?refill=1` while still serving **sub-resources** from the buffer —
+  so in-flight page loads finish and the user is asked to top up early. Codes
+  stack, so activating another raises the balance and browsing resumes.
+- **Exhaustion is graceful:** truly out of tokens, a navigation redirects to
+  `/pp/activate?exhausted=1`; a sub-resource uses `WindowClient.navigate` to send
+  the owning tab there rather than leaving a broken page.
 
 ## Large activations (big quotas)
 
@@ -192,6 +242,13 @@ another service, replicate the `/pp/*`, static, `location /`, `@challenge`, and
 - Residual metadata risk: with a tiny user set, IP/timing correlation is possible;
   the anonymity set grows with users. Tokens can be shared/exported by design and
   cannot be revoked once issued (only unused *codes* can be revoked).
+- **Session linkability:** requests within one session share a cookie and are
+  mutually linkable (~`pointsPerToken/pointsPerRequest` of them); session ids are
+  random and never derived from the token, so sessions stay unlinkable to each
+  other and to issuance.
+- **Bypass is not anonymous:** the operator bypass cookie is a stable per-device
+  credential — it deliberately trades away unlinkability for the operator's own
+  convenience. Keep the password secret.
 
 ## Key rotation (manual, for now)
 
