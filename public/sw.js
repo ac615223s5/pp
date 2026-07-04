@@ -108,6 +108,27 @@ function renewSession() {
   return sessionRenewal;
 }
 
+// Metering config (requests-per-token, refill buffer), fetched once and cached.
+let configPromise = null;
+function getConfig() {
+  if (!configPromise) {
+    configPromise = fetch('/pp/config')
+      .then((r) => r.json())
+      .catch(() => null);
+  }
+  return configPromise;
+}
+
+// True when the token pool is within the refill buffer, so a new page should be
+// steered to re-activate (the buffer is left to finish already-started loads).
+async function withinRefillBuffer() {
+  const cfg = await getConfig();
+  if (!cfg || !cfg.requestsPerToken) return false;
+  const reserveTokens = Math.ceil(cfg.refillBufferRequests / cfg.requestsPerToken);
+  const tokens = await countTokens(await openDB());
+  return tokens <= reserveTokens;
+}
+
 function exhausted(request, event) {
   broadcast({ type: 'pp-remaining', remaining: 0 });
   if (request.mode === 'navigate') {
@@ -127,6 +148,12 @@ function exhausted(request, event) {
 
 async function handle(event) {
   const request = event.request;
+
+  // 0. Refill buffer: steer NEW page loads to re-activate once low, but keep
+  //    serving sub-resources so an in-flight load can finish from the buffer.
+  if (request.mode === 'navigate' && (await withinRefillBuffer())) {
+    return Response.redirect('/pp/activate?refill=1', 302);
+  }
 
   // 1. Try riding the current session cookie.
   let res = await ride(request);

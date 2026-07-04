@@ -111,6 +111,14 @@ export class Store {
 
   // ---- points-metered sessions -------------------------------------------
 
+  // Read a session's remaining points without spending (for /pp/points).
+  getSessionPoints(id: string): number | null {
+    const row = this.db.prepare('SELECT points FROM sessions WHERE id = ?').get(id) as
+      | { points: number }
+      | undefined;
+    return row ? row.points : null;
+  }
+
   createSession(id: string, points: number): void {
     this.db
       .prepare('INSERT INTO sessions (id, points, created_at) VALUES (?, ?, ?)')

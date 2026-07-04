@@ -53,6 +53,23 @@ async function main() {
     res.json(pp.tokenKeyDirectory());
   });
 
+  // Client-visible metering config (for the SW's refill buffer + status page).
+  app.get('/pp/config', (_req, res) => {
+    res.json({
+      pointsPerToken: config.pointsPerToken,
+      pointsPerRequest: config.pointsPerRequest,
+      requestsPerToken: Math.floor(config.pointsPerToken / config.pointsPerRequest),
+      refillBufferRequests: config.refillBufferRequests,
+    });
+  });
+
+  // Current session's remaining balance (reads the cookie; spends nothing).
+  app.get('/pp/points', (req, res) => {
+    const sid = parseSessionId(req.header('cookie'));
+    const points = (sid ? store.getSessionPoints(sid) : null) ?? 0;
+    res.json({ points, requests: Math.floor(points / config.pointsPerRequest) });
+  });
+
   // UX helper: lets the activation page learn how many tokens to generate and
   // gives fast feedback for a bad/used code before the expensive blinding.
   app.get('/pp/issue-info', (req, res) => {

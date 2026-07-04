@@ -15,6 +15,10 @@ export const config = {
   pointsPerToken: Number(process.env.PP_POINTS_PER_TOKEN ?? 1_000_000),
   pointsPerRequest: Number(process.env.PP_POINTS_PER_REQUEST ?? 1_000),
   sessionCookie: process.env.PP_SESSION_COOKIE ?? 'pp_session',
+  // Reserve this many requests of capacity: once a device is within the buffer,
+  // new navigations are steered to re-activate, but the buffer stays spendable so
+  // in-flight page loads (which fire many sub-requests at once) still complete.
+  refillBufferRequests: Number(process.env.PP_REFILL_BUFFER_REQUESTS ?? 5_000),
   // sessions with fewer than one request's worth of points, or older than this,
   // are swept periodically.
   sessionMaxAgeMs: Number(process.env.PP_SESSION_MAX_AGE_MS ?? 30 * 24 * 3600 * 1000),

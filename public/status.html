@@ -18,62 +18,117 @@
       #label { opacity: 0.75; }
       .low { color: #b02a37; }
       a { margin: 0 0.5rem; }
+      .transfer { margin-top: 2rem; border-top: 1px solid #8884; padding-top: 1.5rem; }
+      button { font-size: 0.95rem; padding: 0.45rem 0.9rem; margin: 0 0.25rem; cursor: pointer; }
+      #xfer-msg { margin-top: 0.75rem; min-height: 1.4rem; }
+      .ok { color: #157347; }
+      .err { color: #b02a37; }
+      small { opacity: 0.7; }
     </style>
   </head>
   <body>
-    <h1>Anonymous access tokens</h1>
+    <h1>Anonymous access</h1>
     <p id="count">…</p>
-    <p id="label">remaining on this device</p>
+    <p id="label">requests remaining on this device</p>
+    <p id="breakdown" style="opacity: 0.75; font-size: 0.9rem"></p>
     <p>
       <a href="/pp/activate">Activate a code</a> ·
       <a href="/">Back to the site</a>
     </p>
+
+    <div class="transfer">
+      <p>Move your unspent tokens between browsers or devices:</p>
+      <button id="export">Copy tokens to clipboard</button>
+      <button id="import">Paste tokens from clipboard</button>
+      <p id="xfer-msg"></p>
+      <p>
+        <small>
+          Exported tokens are bearer credentials — anyone holding the copied text
+          can spend the requests. The current session's points stay on this
+          device and are not exported.
+        </small>
+      </p>
+    </div>
     <script>
-      // Reads the same IndexedDB pool the service worker spends from. First-party
-      // to this origin, so it works for whatever service is gated here — no
-      // change to the proxied app required.
+      // First-party to this origin: reads the IndexedDB token pool the service
+      // worker spends from, and the current session's points via /pp/points
+      // (the session cookie is HttpOnly, so only the server can read it). Works
+      // for whatever service is gated here — no change to the proxied app.
       const DB_NAME = 'pp-tokens';
       const STORE = 'tokens';
 
-      function count() {
-        return new Promise((resolve) => {
+      function openDB() {
+        return new Promise((resolve, reject) => {
           const req = indexedDB.open(DB_NAME, 1);
           req.onupgradeneeded = () =>
             req.result.createObjectStore(STORE, { autoIncrement: true });
-          req.onsuccess = () => {
-            const c = req.result.transaction(STORE, 'readonly').objectStore(STORE).count();
-            c.onsuccess = () => resolve(c.result);
-            c.onerror = () => resolve(-1);
-          };
-          req.onerror = () => resolve(-1);
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
         });
+      }
+
+      async function countTokens() {
+        const db = await openDB();
+        return new Promise((resolve) => {
+          const c = db.transaction(STORE, 'readonly').objectStore(STORE).count();
+          c.onsuccess = () => resolve(c.result);
+          c.onerror = () => resolve(0);
+        });
+      }
+
+      async function getAllTokens() {
+        const db = await openDB();
+        return new Promise((resolve) => {
+          const r = db.transaction(STORE, 'readonly').objectStore(STORE).getAll();
+          r.onsuccess = () => resolve(r.result || []);
+          r.onerror = () => resolve([]);
+        });
+      }
+
+      // Add tokens, skipping any this device already holds (so re-importing your
+      // own pool doesn't duplicate). Returns how many were newly added.
+      async function addTokens(tokens) {
+        const existing = new Set(await getAllTokens());
+        const fresh = tokens.filter((t) => typeof t === 'string' && !existing.has(t));
+        if (!fresh.length) return 0;
+        const db = await openDB();
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE, 'readwrite');
+          const os = tx.objectStore(STORE);
+          for (const t of fresh) os.add(t);
+          tx.oncomplete = resolve;
+          tx.onerror = () => reject(tx.error);
+        });
+        return fresh.length;
       }
 
       const countEl = document.getElementById('count');
       const labelEl = document.getElementById('label');
-
-      function render(n) {
-        if (n < 0) {
-          countEl.textContent = '—';
-          labelEl.textContent = 'unable to read token store';
-          return;
-        }
-        countEl.textContent = n.toLocaleString();
-        countEl.classList.toggle('low', n === 0);
-        labelEl.textContent =
-          n === 0 ? 'none left — activate a new code' : 'remaining on this device';
-      }
+      const breakdownEl = document.getElementById('breakdown');
+      let cfg = null;
 
       async function refresh() {
-        render(await count());
+        if (!cfg) cfg = await fetch('/pp/config').then((r) => r.json()).catch(() => null);
+        const reqPerToken = (cfg && cfg.requestsPerToken) || 1;
+        const tokens = await countTokens();
+        const session = await fetch('/pp/points').then((r) => r.json()).catch(() => ({ points: 0, requests: 0 }));
+        const total = tokens * reqPerToken + (session.requests || 0);
+
+        countEl.textContent = total.toLocaleString();
+        countEl.classList.toggle('low', total === 0);
+        labelEl.textContent =
+          total === 0 ? 'none left — activate a new code' : 'requests remaining on this device';
+        breakdownEl.textContent =
+          `${tokens.toLocaleString()} tokens × ${reqPerToken.toLocaleString()} requests` +
+          ` + current session ${(session.points || 0).toLocaleString()} points ` +
+          `(${(session.requests || 0).toLocaleString()} requests)`;
       }
+
       refresh();
       setInterval(refresh, 3000);
-
-      // Live updates while the SW is spending in another tab.
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.addEventListener('message', (e) => {
-          if (e.data && e.data.type === 'pp-remaining') render(e.data.remaining);
+          if (e.data && e.data.type === 'pp-remaining') refresh();
         });
       }
     </script>

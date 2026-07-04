@@ -9,6 +9,10 @@
 // parallelising it across cores is the main speed win. All crypto lives in
 // pp-worker.ts; this file only orchestrates and stores.
 
+// This file has no imports, so mark it a module to keep its scope isolated
+// (otherwise it shares globals with the other bundled scripts).
+export {};
+
 // ---- IndexedDB token pool -------------------------------------------------
 
 const DB_NAME = 'pp-tokens';
@@ -262,6 +266,8 @@ async function init() {
 
   if (params.get('exhausted') === '1') {
     setStatus('Your tokens on this device are used up. Enter a new code to continue.', 'err');
+  } else if (params.get('refill') === '1') {
+    setStatus('Running low on requests — activate a new code to top up (they stack).', 'err');
   }
 }
 init();
