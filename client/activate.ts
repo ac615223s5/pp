@@ -119,9 +119,7 @@ async function activate() {
 
   try {
     // 1. Register the service worker so it can attach tokens site-wide.
-    if ('serviceWorker' in navigator) {
-      await navigator.serviceWorker.register('/pp/sw.js', { scope: '/' });
-    }
+    await ensureServiceWorker();
 
     // 2. Validate the code and learn how many tokens to make.
     const info = await fetch(`/pp/issue-info?code=${encodeURIComponent(code)}`);
@@ -284,8 +282,34 @@ pwInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') unlock();
 });
 
+// Register the gate's service worker (scope '/') and wait until it is active,
+// so a navigation issued right after (the challenge bounce, or the user's next
+// click) is actually controlled by it. Idempotent: re-registering an already
+// installed SW is a no-op. Bounded so a wedged registration can't hang the page.
+async function ensureServiceWorker(): Promise<void> {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    await navigator.serviceWorker.register('/pp/sw.js', { scope: '/' });
+    await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+  } catch (err) {
+    console.error('service worker registration failed', err);
+  }
+}
+
 async function init() {
   const params = new URLSearchParams(location.search);
+
+  // Ensure the gate's service worker is installed and active on EVERY visit to
+  // this page — it's the component that rides the session and spends tokens, so
+  // without it every navigation cold-challenges straight back here. A user who
+  // lands here via a challenge redirect (e.g. after unregistering the SW) never
+  // submits a code, so registering only in activate() would strand them on this
+  // page despite a full token pool. Awaited so the bounce below lands on a page
+  // the SW actually controls.
+  await ensureServiceWorker();
 
   // nginx tags its tokenless-request redirect with ?challenge=1. The common
   // cause is a hard refresh, which bypasses the service worker so the request

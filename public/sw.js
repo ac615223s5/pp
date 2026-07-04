@@ -68,9 +68,13 @@ let redirecting = false;
 async function navigateOwner(clientId) {
   try {
     const client = clientId ? await self.clients.get(clientId) : null;
-    if (client && typeof client.navigate === 'function') {
-      await client.navigate('/pp/activate?exhausted=1');
-    }
+    if (!client || typeof client.navigate !== 'function') return;
+    // Never bounce a tab that's already on a /pp/ page (the activation page).
+    // Otherwise a gated sub-resource OF that page — e.g. /favicon.ico when the
+    // pool is empty — navigates it to itself, reloading forever and making the
+    // activation page unreachable.
+    if (new URL(client.url).pathname.startsWith('/pp/')) return;
+    await client.navigate('/pp/activate?exhausted=1');
   } catch {
     /* client gone / navigation not allowed — ignore */
   }
@@ -85,11 +89,17 @@ function ride(request) {
   return fetch(new Request(request, { headers }));
 }
 
-// Open a fresh session by spending exactly one token. Coalesced: when a session
-// drains mid page-load, the flood of concurrent 401s all share this one attempt
-// instead of each burning a token. Kept as a settled promise so late-arriving
-// 401s from the same drain ride it too; replaced only when a session drains
-// again. Returns true if a session was opened, false if the pool is empty.
+// Open a fresh session by spending exactly one token. Single-flight: when a
+// session drains, the flood of concurrent 401s from that same drain all attach
+// to this one in-flight attempt (during its network RTT) instead of each burning
+// a token. It is CLEARED as soon as it settles — so the very next drain boundary
+// renews immediately rather than riding a stale "already renewed" promise. (An
+// earlier version kept it settled for the whole session lifetime, which made the
+// first 401 after every exact drain do a wasted no-op renewal + re-ride before
+// the real one — a visible hiccup when a video segment burst lands on the
+// boundary. Clearing on settle removes that: the same-drain herd still coalesces
+// because it attaches before the RTT completes.) True if a session opened, false
+// if the pool is empty.
 let sessionRenewal = null;
 
 function renewSession() {
@@ -113,7 +123,11 @@ function renewSession() {
         return true;
       }
       return false;
-    })();
+    })().finally(() => {
+      // Clear on settle so the next drain triggers a real renewal, not a no-op
+      // ride of this now-stale promise.
+      sessionRenewal = null;
+    });
   }
   return sessionRenewal;
 }
@@ -193,7 +207,10 @@ self.addEventListener('fetch', (event) => {
   if (request.headers.get('X-PP-SW')) return; // our own ride/renew fetch — pass through
   if (url.pathname.startsWith('/pp/')) return; // never gate the pp endpoints
   if (request.method !== 'GET') return; // initial version: gate GET only
-  if (STATIC_RE.test(url.pathname)) return; // static assets: no token
+  // TEST (2026-07-04): static-asset exemption disabled so the SW meters ALL GETs
+  // (rides the session / lazy-spends tokens for css/js/img/media too). Restore
+  // the line below to stop wasting tokens on assets nginx already exempts.
+  // if (STATIC_RE.test(url.pathname)) return; // static assets: no token
 
   event.respondWith(handle(event));
 });
