@@ -1,0 +1,138 @@
+// SQLite-backed state. Two concerns:
+//   invite_codes  - one row per issued code; single-use claim is atomic.
+//   spent_tokens  - redeemed token hashes; double-spend guard is atomic.
+//
+// better-sqlite3 is synchronous, which is exactly what we want for the
+// check-and-set primitives (no interleaving inside a single statement).
+
+import Database from 'better-sqlite3';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+
+export interface CodeRow {
+  code: string;
+  quota: number;
+  used: number;
+  created_at: number;
+  used_at: number | null;
+}
+
+export class Store {
+  private db: Database.Database;
+
+  constructor(path: string) {
+    mkdirSync(dirname(path), { recursive: true });
+    this.db = new Database(path);
+    this.db.pragma('journal_mode = WAL');
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS invite_codes (
+        code       TEXT PRIMARY KEY,
+        quota      INTEGER NOT NULL,
+        used       INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        used_at    INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS spent_tokens (
+        epoch    TEXT NOT NULL,
+        hash     TEXT NOT NULL,
+        spent_at INTEGER NOT NULL,
+        PRIMARY KEY (epoch, hash)
+      );
+      CREATE TABLE IF NOT EXISTS sessions (
+        id         TEXT PRIMARY KEY,
+        points     INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+    `);
+  }
+
+  // ---- invite codes -------------------------------------------------------
+
+  createCode(code: string, quota: number): void {
+    this.db
+      .prepare('INSERT INTO invite_codes (code, quota, created_at) VALUES (?, ?, ?)')
+      .run(code, quota, Date.now());
+  }
+
+  getCode(code: string): CodeRow | undefined {
+    return this.db.prepare('SELECT * FROM invite_codes WHERE code = ?').get(code) as
+      | CodeRow
+      | undefined;
+  }
+
+  listCodes(): CodeRow[] {
+    return this.db
+      .prepare('SELECT * FROM invite_codes ORDER BY created_at DESC')
+      .all() as CodeRow[];
+  }
+
+  // Delete an unused code. Returns true if it was removed (spent codes stay).
+  revokeCode(code: string): boolean {
+    return (
+      this.db.prepare('DELETE FROM invite_codes WHERE code = ? AND used = 0').run(code)
+        .changes === 1
+    );
+  }
+
+  // Check a code is usable for a batch of `batchSize` tokens WITHOUT consuming
+  // it. The handler signs first, then calls markUsed — so a signing failure
+  // never burns the code.
+  validateForIssue(
+    code: string,
+    batchSize: number,
+  ): 'ok' | 'unknown' | 'used' | 'over_quota' {
+    const row = this.getCode(code);
+    if (!row) return 'unknown';
+    if (row.used) return 'used';
+    if (batchSize < 1 || batchSize > row.quota) return 'over_quota';
+    return 'ok';
+  }
+
+  // Atomically mark a code used. Returns false if it was already used (i.e. a
+  // concurrent activation of the same code won the race) so the caller can 409.
+  markUsed(code: string): boolean {
+    return (
+      this.db
+        .prepare('UPDATE invite_codes SET used = 1, used_at = ? WHERE code = ? AND used = 0')
+        .run(Date.now(), code).changes === 1
+    );
+  }
+
+  // ---- spent tokens -------------------------------------------------------
+
+  // Atomic double-spend check: true iff this hash was newly recorded.
+  trySpend(epoch: string, hash: string): boolean {
+    return (
+      this.db
+        .prepare('INSERT OR IGNORE INTO spent_tokens (epoch, hash, spent_at) VALUES (?, ?, ?)')
+        .run(epoch, hash, Date.now()).changes === 1
+    );
+  }
+
+  // ---- points-metered sessions -------------------------------------------
+
+  createSession(id: string, points: number): void {
+    this.db
+      .prepare('INSERT INTO sessions (id, points, created_at) VALUES (?, ?, ?)')
+      .run(id, points, Date.now());
+  }
+
+  // Atomically draw `cost` points from a session. Returns the remaining balance,
+  // or null if the session is unknown or can't cover the cost (caller then falls
+  // back to a token). RETURNING makes the debit-and-read a single statement.
+  spendSession(id: string, cost: number): number | null {
+    const row = this.db
+      .prepare(
+        'UPDATE sessions SET points = points - ? WHERE id = ? AND points >= ? RETURNING points',
+      )
+      .get(cost, id, cost) as { points: number } | undefined;
+    return row ? row.points : null;
+  }
+
+  // Sweep sessions that can't fund another request or are past max age.
+  cleanupSessions(minPoints: number, maxAgeMs: number): number {
+    return this.db
+      .prepare('DELETE FROM sessions WHERE points < ? OR created_at < ?')
+      .run(minPoints, Date.now() - maxAgeMs).changes;
+  }
+}

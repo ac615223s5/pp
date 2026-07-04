@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Activate access</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 34rem;
+        margin: 4rem auto;
+        padding: 0 1rem;
+        line-height: 1.5;
+      }
+      h1 { font-size: 1.4rem; }
+      input {
+        font-size: 1rem;
+        padding: 0.5rem;
+        width: 100%;
+        box-sizing: border-box;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      button {
+        font-size: 1rem;
+        padding: 0.55rem 1rem;
+        margin-top: 0.75rem;
+        cursor: pointer;
+      }
+      button[disabled] { cursor: progress; opacity: 0.6; }
+      progress { width: 100%; margin-top: 1rem; }
+      #status { margin-top: 1rem; min-height: 1.5rem; }
+      .ok { color: #157347; }
+      .err { color: #b02a37; }
+      small { opacity: 0.7; }
+    </style>
+  </head>
+  <body>
+    <h1>Activate access</h1>
+    <p>
+      Paste the invite code you were given. This sets up anonymous access tokens
+      on <em>this device only</em>. No account, no tracking &mdash; the server
+      cannot link your browsing to your code.
+    </p>
+    <label for="code"><strong>Invite code</strong></label>
+    <input id="code" autocomplete="off" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX" />
+    <button id="go">Activate</button>
+    <progress id="bar" value="0" max="100" hidden></progress>
+    <div id="status"></div>
+    <p>
+      Don't have a code?
+      <a href="https://matrix.to/#/!REDACTED:matrix.org?via=matrix.org"
+        >Request one on Matrix</a
+      >.
+    </p>
+    <p><small>Clearing site data, or using a new device/browser, needs a new code.</small></p>
+    <script src="/pp/activate.js"></script>
+  </body>
+</html>

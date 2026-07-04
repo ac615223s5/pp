@@ -1,0 +1,6 @@
+node_modules
+dist
+data
+public/activate.js
+public/pp-worker.js
+npm-debug.log

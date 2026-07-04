@@ -1,0 +1,25 @@
+services:
+  privacy-pass:
+    container_name: privacy-pass
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # host 8017 -> container 8787. nginx reaches this via the bridge gateway
+      # 172.33.0.1:8017 (same convention as every other pepperbox service).
+      - 8017:8787
+    volumes:
+      # sqlite db + generated Blind RSA keypair live here. Back up cautiously:
+      # keys are regenerable and the spent-set is disposable (see README).
+      - ./data:/data
+    labels:
+      # locally built image; nothing for Watchtower to pull.
+      - com.centurylinklabs.watchtower.enable=false
+
+networks:
+  default:
+    # Pin the subnet so nginx can hardcode the gateway IP (172.33.0.1).
+    ipam:
+      config:
+        - subnet: 172.33.0.0/16
+          gateway: 172.33.0.1

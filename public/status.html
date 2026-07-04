@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Token balance</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 34rem;
+        margin: 4rem auto;
+        padding: 0 1rem;
+        line-height: 1.5;
+        text-align: center;
+      }
+      #count { font-size: 2.5rem; font-weight: 700; margin: 1rem 0 0; }
+      #label { opacity: 0.75; }
+      .low { color: #b02a37; }
+      a { margin: 0 0.5rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Anonymous access tokens</h1>
+    <p id="count">…</p>
+    <p id="label">remaining on this device</p>
+    <p>
+      <a href="/pp/activate">Activate a code</a> ·
+      <a href="/">Back to the site</a>
+    </p>
+    <script>
+      // Reads the same IndexedDB pool the service worker spends from. First-party
+      // to this origin, so it works for whatever service is gated here — no
+      // change to the proxied app required.
+      const DB_NAME = 'pp-tokens';
+      const STORE = 'tokens';
+
+      function count() {
+        return new Promise((resolve) => {
+          const req = indexedDB.open(DB_NAME, 1);
+          req.onupgradeneeded = () =>
+            req.result.createObjectStore(STORE, { autoIncrement: true });
+          req.onsuccess = () => {
+            const c = req.result.transaction(STORE, 'readonly').objectStore(STORE).count();
+            c.onsuccess = () => resolve(c.result);
+            c.onerror = () => resolve(-1);
+          };
+          req.onerror = () => resolve(-1);
+        });
+      }
+
+      const countEl = document.getElementById('count');
+      const labelEl = document.getElementById('label');
+
+      function render(n) {
+        if (n < 0) {
+          countEl.textContent = '—';
+          labelEl.textContent = 'unable to read token store';
+          return;
+        }
+        countEl.textContent = n.toLocaleString();
+        countEl.classList.toggle('low', n === 0);
+        labelEl.textContent =
+          n === 0 ? 'none left — activate a new code' : 'remaining on this device';
+      }
+
+      async function refresh() {
+        render(await count());
+      }
+      refresh();
+      setInterval(refresh, 3000);
+
+      // Live updates while the SW is spending in another tab.
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.addEventListener('message', (e) => {
+          if (e.data && e.data.type === 'pp-remaining') render(e.data.remaining);
+        });
+      }
+    </script>
+  </body>
+</html>
