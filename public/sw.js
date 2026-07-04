@@ -11,7 +11,10 @@ const DB_NAME = 'pp-tokens';
 const STORE = 'tokens';
 
 // Assets nginx serves without auth_request — don't waste a token on them.
-const STATIC_RE = /\.(?:css|js|mjs|map|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|eot)(?:\?|$)/i;
+// Includes streaming media: video players fire many concurrent segment requests,
+// which per-request gating (esp. at small sessions) can't keep up with.
+const STATIC_RE =
+  /\.(?:css|js|mjs|map|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|eot|mp4|m4v|webm|m4s|m3u8|ts|m4a|mp3|aac|ogg|opus|wav|flac|vtt|srt)(?:\?|$)/i;
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));

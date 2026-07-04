@@ -26,6 +26,10 @@ issuance guarantees this cryptographically.
      quotas (~10k) are practical.
 - ✅ **Operator bypass password**, **token export/import**, **balance page**,
      and an early-**refill buffer** (all below).
+- ✅ **Static assets *and* streaming media are exempt** (css/js/img/fonts +
+     m3u8/m4s/ts/mp4/webm/audio) — only HTML navigations and extensionless
+     dynamic requests meter. (Video fires too many concurrent segment requests
+     for per-request gating, so it must be exempt or playback 401s.)
 - ❌ **No key rotation overlap.** One key epoch; regenerating keys invalidates all
      outstanding tokens *and* bypass cookies.
 - ❌ GET requests only are gated (Quetre is read-only). Non-GET from the gated IP
