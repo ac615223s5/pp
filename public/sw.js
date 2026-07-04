@@ -207,10 +207,7 @@ self.addEventListener('fetch', (event) => {
   if (request.headers.get('X-PP-SW')) return; // our own ride/renew fetch — pass through
   if (url.pathname.startsWith('/pp/')) return; // never gate the pp endpoints
   if (request.method !== 'GET') return; // initial version: gate GET only
-  // TEST (2026-07-04): static-asset exemption disabled so the SW meters ALL GETs
-  // (rides the session / lazy-spends tokens for css/js/img/media too). Restore
-  // the line below to stop wasting tokens on assets nginx already exempts.
-  // if (STATIC_RE.test(url.pathname)) return; // static assets: no token
+  if (STATIC_RE.test(url.pathname)) return; // static assets: no token
 
   event.respondWith(handle(event));
 });
