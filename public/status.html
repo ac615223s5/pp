@@ -131,6 +131,51 @@
           if (e.data && e.data.type === 'pp-remaining') refresh();
         });
       }
+
+      // ---- export / import via clipboard ----
+      const xmsg = document.getElementById('xfer-msg');
+      const xferMsg = (t, cls) => {
+        xmsg.textContent = t;
+        xmsg.className = cls || '';
+      };
+
+      document.getElementById('export').addEventListener('click', async () => {
+        try {
+          const tokens = await getAllTokens();
+          if (!tokens.length) return xferMsg('No tokens to export.', 'err');
+          await navigator.clipboard.writeText(
+            JSON.stringify({ pp: 1, origin: location.origin, tokens }),
+          );
+          xferMsg(`Copied ${tokens.length.toLocaleString()} tokens to the clipboard.`, 'ok');
+        } catch (e) {
+          xferMsg('Copy failed: ' + e.message, 'err');
+        }
+      });
+
+      document.getElementById('import').addEventListener('click', async () => {
+        try {
+          const text = await navigator.clipboard.readText();
+          let data;
+          try {
+            data = JSON.parse(text);
+          } catch {
+            data = null;
+          }
+          if (!data || data.pp !== 1 || !Array.isArray(data.tokens)) {
+            return xferMsg('Clipboard does not contain an exported token set.', 'err');
+          }
+          const added = await addTokens(data.tokens);
+          xferMsg(
+            added
+              ? `Imported ${added.toLocaleString()} new tokens.`
+              : 'Nothing new to import (already on this device).',
+            added ? 'ok' : '',
+          );
+          refresh();
+        } catch (e) {
+          xferMsg('Paste failed: ' + e.message, 'err');
+        }
+      });
     </script>
   </body>
 </html>

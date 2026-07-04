@@ -93,16 +93,23 @@ function renewSession() {
   if (!sessionRenewal) {
     sessionRenewal = (async () => {
       const db = await openDB();
-      const token = await popToken(db);
-      if (!token) return false;
-      const headers = new Headers();
-      headers.set('X-PP-SW', '1');
-      headers.set('Authorization', `PrivateToken token="${token}"`);
-      // One minimal gated request the verifier meters — it mints the session
-      // cookie. Body ignored.
-      await fetch(new Request('/', { headers, redirect: 'manual' })).catch(() => {});
-      broadcast({ type: 'pp-remaining', remaining: await countTokens(db) });
-      return true;
+      // Pop tokens until one opens a session. Already-spent tokens (e.g. from an
+      // imported, partially-used pool) make the verifier answer 401 — discard
+      // and try the next, bounded so a fully-spent pool can't spin forever.
+      for (let tries = 0; tries < 16; tries++) {
+        const token = await popToken(db);
+        if (!token) return false;
+        const headers = new Headers();
+        headers.set('X-PP-SW', '1');
+        headers.set('Authorization', `PrivateToken token="${token}"`);
+        // One minimal gated request the verifier meters — it mints the session
+        // cookie. Body ignored.
+        const r = await fetch(new Request('/', { headers, redirect: 'manual' })).catch(() => null);
+        broadcast({ type: 'pp-remaining', remaining: await countTokens(db) });
+        if (r && r.status === 401) continue; // token was spent/invalid — next
+        return true;
+      }
+      return false;
     })();
   }
   return sessionRenewal;
