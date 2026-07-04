@@ -10,7 +10,7 @@
 
 import { publicVerif } from '@cloudflare/privacypass-ts';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { createPrivateKey, type KeyObject } from 'node:crypto';
+import { createHash, createPrivateKey, type KeyObject } from 'node:crypto';
 import { join } from 'node:path';
 import { sha256hex } from './util.js';
 
@@ -27,6 +27,10 @@ export interface IssuerState {
   privateKey: KeyObject;
   publicKeyBytes: Uint8Array; // wire token-key
   epoch: string; // stable id derived from the public key
+  // HMAC key for signing operator bypass cookies. Derived from the private key,
+  // so it survives restarts but a key rotation (new keypair) invalidates every
+  // outstanding bypass cookie too — same epoch semantics as tokens.
+  bypassSecret: Buffer;
 }
 
 const subtle = globalThis.crypto.subtle;
@@ -68,5 +72,9 @@ export async function loadOrCreateIssuer(
   const privateKey = createPrivateKey({ key: Buffer.from(privPkcs8), format: 'der', type: 'pkcs8' });
   const publicKeyBytes = await getPublicKeyBytes(publicKey);
   const epoch = sha256hex(publicKeyBytes).slice(0, 16);
-  return { publicKey, privateKey, publicKeyBytes, epoch };
+  const bypassSecret = createHash('sha256')
+    .update(Buffer.from(privPkcs8))
+    .update('pp-bypass-secret-v1')
+    .digest();
+  return { publicKey, privateKey, publicKeyBytes, epoch, bypassSecret };
 }

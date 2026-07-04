@@ -64,8 +64,22 @@ function main() {
       console.log(ok ? `revoked ${code}` : `not revoked (unknown or already used): ${code}`);
       break;
     }
+    case 'bypass-link': {
+      // Convenience: print the activation link that prefills the bypass password.
+      // The password lives in the environment (PP_BYPASS_PASSWORD), not the db.
+      if (!config.bypassPassword) {
+        console.error('bypass disabled — set PP_BYPASS_PASSWORD in .env and restart');
+        process.exit(1);
+      }
+      const pw = encodeURIComponent(config.bypassPassword);
+      console.log(`link: ${config.gatedOrigin}/pp/activate?pw=${pw}`);
+      console.log('(password reusable, unlimited, unlinkable it is NOT — share privately)');
+      break;
+    }
     default:
-      console.error('commands: new-code [--quota N] | list-codes | revoke-code <code>');
+      console.error(
+        'commands: new-code [--quota N] | list-codes | revoke-code <code> | bypass-link',
+      );
       process.exit(1);
   }
 }

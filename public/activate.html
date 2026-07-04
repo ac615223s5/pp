@@ -22,6 +22,10 @@
         letter-spacing: 0.06em;
         text-transform: uppercase;
       }
+      /* the bypass password is case- and spacing-sensitive, unlike invite codes */
+      input[type='password'] { letter-spacing: normal; text-transform: none; }
+      details { margin-top: 1.5rem; }
+      summary { cursor: pointer; opacity: 0.8; }
       button {
         font-size: 1rem;
         padding: 0.55rem 1rem;
@@ -54,6 +58,18 @@
         >Request one on Matrix</a
       >.
     </p>
+    <details id="bypass">
+      <summary>Have a bypass password?</summary>
+      <p>
+        <small
+          >Unlocks unlimited access on this device without spending tokens. For
+          the operator's own use.</small
+        >
+      </p>
+      <label for="pw"><strong>Bypass password</strong></label>
+      <input id="pw" type="password" autocomplete="off" spellcheck="false" />
+      <button id="unlock">Unlock</button>
+    </details>
     <p><small>Clearing site data, or using a new device/browser, needs a new code.</small></p>
     <script src="/pp/activate.js"></script>
   </body>

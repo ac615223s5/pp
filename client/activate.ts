@@ -53,6 +53,9 @@ const codeInput = document.getElementById('code') as HTMLInputElement;
 const goBtn = document.getElementById('go') as HTMLButtonElement;
 const bar = document.getElementById('bar') as HTMLProgressElement;
 const statusEl = document.getElementById('status') as HTMLDivElement;
+const pwInput = document.getElementById('pw') as HTMLInputElement;
+const unlockBtn = document.getElementById('unlock') as HTMLButtonElement;
+const bypassEl = document.getElementById('bypass') as HTMLDetailsElement;
 
 function setStatus(msg: string, cls: '' | 'ok' | 'err' = '') {
   statusEl.textContent = msg;
@@ -229,9 +232,56 @@ async function activate() {
   }
 }
 
+// ---- operator bypass -------------------------------------------------------
+
+// Exchange the bypass password for a signed cookie. Unlike token activation,
+// this spends nothing and needs no service worker: the cookie alone makes the
+// nginx gate pass every request. It stays valid on this device until it expires
+// or site data is cleared.
+async function unlock() {
+  const password = pwInput.value;
+  if (!password) {
+    setStatus('Enter the bypass password.', 'err');
+    return;
+  }
+  unlockBtn.disabled = true;
+  setStatus('Unlocking…');
+  try {
+    const resp = await fetch('/pp/bypass', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    if (resp.status === 404) {
+      setStatus('Bypass is not enabled on this server.', 'err');
+      unlockBtn.disabled = false;
+      return;
+    }
+    if (!resp.ok) {
+      setStatus('That password is incorrect.', 'err');
+      unlockBtn.disabled = false;
+      return;
+    }
+    bar.hidden = true;
+    setStatus('Unlocked — unlimited access on this device, no tokens needed.', 'ok');
+    const link = document.createElement('a');
+    link.href = '/';
+    link.textContent = 'Continue to the site →';
+    statusEl.append(document.createElement('br'), link);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Something went wrong: ${(err as Error).message}`, 'err');
+    unlockBtn.disabled = false;
+  }
+}
+
 goBtn.addEventListener('click', activate);
 codeInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') activate();
+});
+unlockBtn.addEventListener('click', unlock);
+pwInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') unlock();
 });
 
 async function init() {
@@ -262,6 +312,16 @@ async function init() {
   if (linkCode) {
     codeInput.value = linkCode.trim().toUpperCase();
     codeInput.focus();
+  }
+
+  // Prefill the bypass password from an operator link (?pw=...) and expand the
+  // section. Not auto-submitted: the password is reusable so a prefetch can't
+  // burn it, but leaving the click to the human keeps it out of surprise POSTs.
+  const linkPw = params.get('pw');
+  if (linkPw) {
+    pwInput.value = linkPw;
+    bypassEl.open = true;
+    pwInput.focus();
   }
 
   if (params.get('exhausted') === '1') {

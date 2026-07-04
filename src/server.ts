@@ -2,22 +2,30 @@
 // auth_request rewrites to. See deploy notes in README / nginx.conf.
 
 import express from 'express';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { config } from './config.js';
 import { Store } from './store.js';
 import { loadOrCreateIssuer } from './keys.js';
 import { PP } from './pp.js';
+import { mintBypassCookie, verifyBypassCookie } from './bypass.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, '..', 'public');
 
-// Extract the session id from a Cookie header, or null.
-function parseSessionId(cookieHeader: string | undefined): string | null {
+// Read a single named cookie from a Cookie header, or null.
+function readCookie(cookieHeader: string | undefined, name: string): string | null {
   if (!cookieHeader) return null;
-  const m = cookieHeader.match(new RegExp(`(?:^|;\\s*)${config.sessionCookie}=([^;\\s]+)`));
+  const m = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}=([^;\\s]+)`));
   return m ? m[1] : null;
+}
+
+// Constant-time password check (hash both sides so length isn't leaked).
+function bypassPasswordMatches(input: string): boolean {
+  const a = createHash('sha256').update(input).digest();
+  const b = createHash('sha256').update(config.bypassPassword).digest();
+  return timingSafeEqual(a, b);
 }
 
 async function main() {
@@ -65,7 +73,7 @@ async function main() {
 
   // Current session's remaining balance (reads the cookie; spends nothing).
   app.get('/pp/points', (req, res) => {
-    const sid = parseSessionId(req.header('cookie'));
+    const sid = readCookie(req.header('cookie'), config.sessionCookie);
     const points = (sid ? store.getSessionPoints(sid) : null) ?? 0;
     res.json({ points, requests: Math.floor(points / config.pointsPerRequest) });
   });
@@ -135,10 +143,18 @@ async function main() {
       res.status(204).end();
       return;
     }
+    const cookie = req.header('cookie');
+
+    // 0. Operator bypass: a valid bypass cookie skips metering entirely — no
+    //    token redeemed, no session points drawn. (Off unless a password is set.)
+    if (config.bypassPassword && verifyBypassCookie(state.bypassSecret, readCookie(cookie, config.bypassCookie))) {
+      res.set('X-PP-Bypass', '1').status(204).end();
+      return;
+    }
     const cost = config.pointsPerRequest;
 
     // 1. Ride an existing session.
-    const sid = parseSessionId(req.header('cookie'));
+    const sid = readCookie(cookie, config.sessionCookie);
     if (sid) {
       const remaining = store.spendSession(sid, cost);
       if (remaining !== null) {
@@ -167,6 +183,30 @@ async function main() {
     }
 
     res.set('WWW-Authenticate', 'PrivateToken').status(401).end();
+  });
+
+  // Operator bypass: exchange the shared password for a signed bypass cookie
+  // that makes every gated request pass without spending a token. Disabled
+  // (404) when no password is configured. Body: { password: string }.
+  app.post('/pp/bypass', (req, res) => {
+    if (!config.bypassPassword) {
+      res.status(404).json({ error: 'disabled' });
+      return;
+    }
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (!password || !bypassPasswordMatches(password)) {
+      res.status(401).json({ error: 'bad_password' });
+      return;
+    }
+    const value = mintBypassCookie(state.bypassSecret, config.bypassMaxAgeMs);
+    res
+      .set(
+        'Set-Cookie',
+        `${config.bypassCookie}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(
+          config.bypassMaxAgeMs / 1000,
+        )}`,
+      )
+      .json({ ok: true, expiresInDays: Math.round(config.bypassMaxAgeMs / 86_400_000) });
   });
 
   // Activation / landing page. Same handler for cold visits and ?exhausted=1.

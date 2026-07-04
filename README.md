@@ -94,6 +94,34 @@ Because there is no session window, a code's quota is consumed roughly one token
 per page view. Size quotas accordingly; keep them modest until a session window
 exists (blind-signing thousands of tokens in the browser is also slow).
 
+## Bypass password (operator escape hatch)
+
+For your own devices you usually don't want to burn tokens at all. Set
+`PP_BYPASS_PASSWORD` in `.env` (empty = feature off) and restart. Entering that
+password on the activation page — or opening the prefilled link — mints a
+signed, HttpOnly `pp_bypass` cookie; while it's present the verifier returns
+`204` for every gated request **without spending a token or session points**.
+
+```sh
+docker compose exec privacy-pass node dist/admin.js bypass-link
+#   link: https://quetre.example.com/pp/activate?pw=<password>
+```
+
+Send yourself that link (or visit `/pp/activate`, expand **"Have a bypass
+password?"**, type it, click **Unlock**). It works on that one browser/device,
+needs no invite code and no service worker — the cookie alone rides every
+request. It lasts `PP_BYPASS_MAX_AGE_MS` (default 365 days) or until you clear
+site data.
+
+- **Not anonymous:** the bypass cookie is a stable per-device value, so it
+  deliberately breaks Privacy Pass's unlinkability. Use it only for yourself.
+- **Not forgeable:** the cookie is HMAC-signed with a secret derived from the
+  issuer private key. A **key rotation invalidates all bypass cookies** too
+  (same epoch semantics as tokens) — re-unlock afterwards.
+- Keep the password secret; it's reusable and grants unlimited access. Because
+  the link puts it in a URL, prefer pasting it on the page over sharing the URL
+  through anything that logs referrers/history.
+
 ## Checking balance & running out
 
 - **Balance:** visit `https://<gated-host>/pp/status.html` — a first-party page

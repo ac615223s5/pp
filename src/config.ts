@@ -15,6 +15,16 @@ export const config = {
   pointsPerToken: Number(process.env.PP_POINTS_PER_TOKEN ?? 1_000_000),
   pointsPerRequest: Number(process.env.PP_POINTS_PER_REQUEST ?? 1_000),
   sessionCookie: process.env.PP_SESSION_COOKIE ?? 'pp_session',
+
+  // Operator bypass. When PP_BYPASS_PASSWORD is set (non-empty), entering it on
+  // the activation page (or via ?pw= in the link) mints a signed bypass cookie
+  // that makes every gated request pass WITHOUT spending a token or session
+  // points. Empty => feature disabled (the /pp/bypass route 404s). This is a
+  // linkable, non-anonymous escape hatch for the operator's own use — it
+  // deliberately breaks the unlinkability property, so keep the password secret.
+  bypassPassword: process.env.PP_BYPASS_PASSWORD ?? '',
+  bypassCookie: process.env.PP_BYPASS_COOKIE ?? 'pp_bypass',
+  bypassMaxAgeMs: Number(process.env.PP_BYPASS_MAX_AGE_MS ?? 365 * 24 * 3600 * 1000),
   // Reserve this many requests of capacity: once a device is within the buffer,
   // new navigations are steered to re-activate, but the buffer stays spendable so
   // in-flight page loads (which fire many sub-requests at once) still complete.
