@@ -1,7 +1,13 @@
 # privacy-pass — anonymous-token bot protection
 
-An initial, single-IP deployment of the Privacy Pass (IETF RFC 9578, **Type 2 /
-Blind RSA 2048**) bot-protection layer described in `../privacy-pass-handoff.md`.
+An anonymous-token (Privacy Pass, IETF RFC 9578, **Type 2 / Blind RSA 2048**)
+bot-protection layer. Built from `./privacy-pass-handoff.md`; in this deployment
+it gates **quetre, redlib, nitter, and rimgo** — every non-whitelisted client is
+metered.
+
+> **Deploying it in front of your own service?** See [`INSTALL.md`](./INSTALL.md)
+> for a generic, step-by-step guide. This README documents how *this* deployment
+> works and why.
 
 The operator issues invite codes; each code grants a batch of anonymous tokens.
 After a one-time activation in the browser, a service worker spends tokens
@@ -10,41 +16,44 @@ when the session runs out. The server can verify a request carries a valid token
 but **cannot link any redemption to the invite code or issuance event** — blind
 issuance guarantees this cryptographically.
 
-## What this initial version does and does NOT do
+## What it does and does NOT do
 
 - ✅ Issuer + verifier in one Node/TS service, own Docker container.
 - ✅ Blind RSA issuance, publicly-verifiable redemption, atomic double-spend guard.
 - ✅ Invite codes with a per-code quota, single-use, admin CLI.
 - ✅ Activation page + service worker + IndexedDB token pool.
-- ✅ nginx `auth_request` integration, **gated to one client IP** (`24.150.9.204`),
-     **never** gated for the LAN (`192.168.88.0/24`) or anyone else.
-- ✅ **Points-metered sessions.** One token opens a session worth
-     `pointsPerToken` (default 1e6); each request draws `pointsPerRequest`
-     (default 1000) → **~1000 requests per token**. Cost stays linear in requests
+- ✅ nginx `auth_request` integration, **gating every client by default** except a
+     `geo`-whitelisted set (LAN `192.168.88.0/24`, WireGuard VPN `10.10.10.0/24`,
+     localhost, monitoring egress). The IP decision lives in the service.
+- ✅ **Points-metered sessions.** A token opens/tops up a session worth
+     `pointsPerToken` (`2_000_000` here); each request draws `pointsPerRequest`
+     (`1000`) → **~2000 requests per token**. Cost stays linear in requests
      (unlike a time window, a bot can't amortise). See *Points-metered sessions*.
 - ✅ **Web Worker-parallelised activation** + native raw-RSA signing, so big
      quotas (~10k) are practical.
 - ✅ **Operator bypass password**, **token export/import**, **balance page**,
      and an early-**refill buffer** (all below).
-- ✅ **Static assets *and* streaming media are exempt** (css/js/img/fonts +
-     m3u8/m4s/ts/mp4/webm/audio) — only HTML navigations and extensionless
-     dynamic requests meter. (Video fires too many concurrent segment requests
-     for per-request gating, so it must be exempt or playback 401s.)
+- ✅ **Media is gated; only non-media static is exempt** (css/js/fonts/icons).
+     Images meter through the service worker; **video/audio bypass the SW**, so
+     they ride a session the SW keeps funded via `POST /pp/refill` (see *Static
+     assets & media*). This reversed an earlier media exemption once scrapers
+     began pulling image/video links directly through the frontends.
 - ❌ **No key rotation overlap.** One key epoch; regenerating keys invalidates all
      outstanding tokens *and* bypass cookies.
-- ❌ GET requests only are gated (Quetre is read-only). Non-GET from the gated IP
-     without a live session gets a 401.
+- ❌ GET requests only are gated (these frontends are read-only). Non-GET from a
+     gated client without a live session gets a 401.
 
 ## Architecture
 
 ```
-Browser SW ── ride session cookie (X-PP-SW) ──► nginx (quetre server block)
-     │         on 401, redeem 1 token instead     │  $pp_gate==1 only
-     ▼                                             ▼  auth_request /pp/verify
-  IndexedDB token pool                       privacy-pass container
-                                             172.33.0.1:8017  (host 8017 → 8787)
+Browser SW ── ride session cookie (X-PP-SW) ──► nginx (gated server block)
+     │  on 401 redeem a token; when the         │  every client, $pp_gate==1
+     │  balance (X-PP-Points) runs low, top up   ▼  auth_request /pp/verify
+     ▼                                         privacy-pass container
+  IndexedDB token pool                         172.33.0.1:8017  (host 8017 → 8787)
                                              ├─ /verify   meter session pts, else
                                              │            redeem token → Set-Cookie
+                                             ├─ /pp/refill    token → top up session
                                              ├─ /pp/issue     blind-sign a batch
                                              ├─ /pp/token-key  issuer public key
                                              ├─ /pp/config     metering params
@@ -85,8 +94,8 @@ cp .env.example .env          # adjust if needed
 docker compose up -d --build  # builds TS + client bundle, generates keys on first run
 ```
 
-Then reload nginx so the new Quetre routes + `$pp_gate` map take effect
-(already merged into `../nginx/nginx.conf`):
+Then reload nginx so the gated routes + `$pp_gate` map take effect (already
+merged into `../nginx/nginx.conf`):
 
 ```sh
 docker exec nginx nginx -t && docker exec nginx nginx -s reload
@@ -112,7 +121,7 @@ so a user can add more later. Users without a code can request one via the Matri
 link on the activation page.
 
 With points-metered sessions, one token covers `pointsPerToken/pointsPerRequest`
-requests (default 1000), so a 500-token code ≈ 500k requests. Activation
+requests (~2000 here), so a 500-token code ≈ 1M requests. Activation
 blind-signs `quota` tokens in the browser (parallelised across Web Workers), so
 very large quotas still take time — size to expected usage.
 
@@ -160,13 +169,52 @@ another token to open a fresh session.
   mid-load drain would 401 several of them. The SW coalesces these into **one**
   token spend (`sessionRenewal`), so a session boundary costs exactly one token,
   and the page keeps loading — no broken sub-resources.
+- **Proactive top-up (for media).** Video/audio bypass the SW and can't trigger
+  the reactive renewal above, so the SW funds the session *ahead of demand*:
+  nginx returns the live balance in the `X-PP-Points` response header, and when it
+  drops below `PP_SESSION_TOPUP_THRESHOLD` the SW single-flight-spends one token
+  via `POST /pp/refill` to **add** `pointsPerToken` to the current session (stable
+  cookie). See *Static assets & media*.
 - **Spent-token resilience.** On renewal the SW pops tokens until one opens a
   session, discarding any already-spent ones (e.g. from an imported, partly-used
   pool), bounded so a fully-spent pool can't spin.
-- **Privacy trade-off.** The ~1000 requests within one session are mutually
-  linkable via the cookie, but sessions are unlinkable to each other and to
-  issuance (random id, blind tokens). Set `PP_POINTS_PER_TOKEN ==
-  PP_POINTS_PER_REQUEST` to fall back to one-token-per-request (max anonymity).
+- **Privacy trade-off.** The requests within one session are mutually linkable
+  via the cookie, but sessions are unlinkable to each other and to issuance
+  (random id, blind tokens). Set `PP_POINTS_PER_TOKEN == PP_POINTS_PER_REQUEST`
+  to fall back to one-token-per-request (max anonymity).
+
+## Static assets & media
+
+Because the gate meters **per request**, what to exempt matters. Three classes:
+
+- **Non-media static** (css/js/fonts/icons): **exempt** at nginx (a narrowed
+  regex `css|js|mjs|map|svg|ico|woff2?|ttf|eot`, plus `^~ /static/` for a
+  service's own bundle, e.g. rimgo). The SW's `STATIC_RE` skips them too. Bots
+  don't scrape these; metering them just wastes points.
+- **Images** (`<img>`): **gated**. They flow through the SW like any GET, so they
+  meter per-request (ride/spend). This is what stops scrapers pulling image links
+  directly through us.
+- **Audio / video** (`<video>`/`<audio>`): **gated, but special.** Media-element
+  range requests **bypass the service worker** (verified: they arrive `sw=0`, no
+  token), so they can't trigger the SW's reactive renewal. They ride a session the
+  SW keeps **funded ahead of demand**:
+  1. nginx surfaces the balance as `X-PP-Points` (`auth_request_set` +
+     `add_header`) on every gated response.
+  2. On any SW-visible request, if the balance is below
+     `PP_SESSION_TOPUP_THRESHOLD` (default `200000` = 200 requests) the SW spends
+     one token via `POST /pp/refill`, adding `pointsPerToken` to the live session.
+  3. The large per-token buffer (`2_000_000` = ~2000 requests) covers stretches of
+     pure playback when the browser has killed the idle SW and no top-up can fire.
+
+> Bots hitting a media link directly just `401` at nginx (no session, no token) —
+> that path needs none of the SW machinery. The top-up exists solely to keep
+> *real users'* video playing. A marathon single-page video (30+ min, no
+> navigation, SW asleep throughout) can still drain the session and stall until a
+> reload; raise `PP_SESSION_TOPUP_THRESHOLD` if that matters.
+
+Per-service media routes: redlib `/preview`,`/img`,`/thumb`,`/vid`,`/hls`; nitter
+`/pic`,`/video`; rimgo root `/{id}.{ext}` (its own UI is under `/static`). None
+are exempted — they fall through to `location /` and meter.
 
 ## Checking balance & running out
 
@@ -181,8 +229,8 @@ another token to open a fresh session.
   another browser/device (deduped, so re-importing your own pool is a no-op).
   Exported tokens are **bearer credentials** — whoever holds the text can spend
   them; the current session's points are not exported.
-- **Refill buffer:** once the pool is within `PP_REFILL_BUFFER_REQUESTS` (default
-  5000, = 5 tokens) of empty, the SW steers new **navigations** to
+- **Refill buffer:** once the pool is within `PP_REFILL_BUFFER_REQUESTS` (`6000`
+  here, ≈ 3 tokens) of empty, the SW steers new **navigations** to
   `/pp/activate?refill=1` while still serving **sub-resources** from the buffer —
   so in-flight page loads finish and the user is asked to top up early. Codes
   stack, so activating another raises the balance and browsing resumes.
@@ -204,38 +252,41 @@ generation (parallelised across Web Workers) is the slow part of a big activatio
 
 ```nginx
 geo $pp_gate {
-    default          0;
-    24.150.9.204/32  1;   # gated
-    192.168.88.0/24  0;   # LAN: never gated
+    default          1;    # gate every client...
+    127.0.0.1        0;    # ...except localhost,
+    10.10.10.0/24    0;    # the WireGuard VPN,
+    192.168.88.0/24  0;    # the LAN,
+    198.135.181.189  0;    # and monitoring (Uptime Kuma) egress.
 }
 ```
 
 `auth_request` cannot be made conditional in nginx (no variables, no `if`), and
 putting it behind a nested `error_page` breaks the `401 -> @challenge` redirect.
-So in the Quetre server block `location /` runs `auth_request /pp/verify` on
+So each gated server block's `location /` runs `auth_request /pp/verify` on
 **every** dynamic request and passes the geo decision to the verifier as the
 `X-PP-Gate` header. **The IP gate therefore lives in the service**: `/verify`
 returns `204` immediately when `X-PP-Gate != 1`, and only enforces a token for
 gated clients. `$remote_addr` is the true client IP, recovered from PROXY
 protocol by the existing `set_real_ip_from 10.10.10.0/24`.
 
-Because the verifier is now in the path for all Quetre HTML requests, `location /`
-also has `error_page 502 503 504 = @pp_fail_open` so a privacy-pass outage fails
-**open** (Quetre stays up, gate stops enforcing) rather than 500-ing everyone.
+Because the verifier is in the path for every gated request, `location /` also
+has `error_page 502 503 504 = @pp_fail_open` so a privacy-pass outage fails
+**open** (the site stays up, gate stops enforcing) rather than 500-ing everyone.
 
-To gate more clients, add IPs/CIDRs to the `geo` block with value `1`. To protect
-another service, replicate the `/pp/*`, static, `location /`, `@challenge`, and
-`@pp_fail_open` blocks in that service's server block (the `geo` map is global).
+Every client is gated by default; to **whitelist** one, add its IP/CIDR to the
+`geo` block with value `0`. This gate is replicated across the quetre, redlib,
+nitter, and rimgo server blocks (the `geo` map is global); protect another
+service by copying that block onto its upstream — or follow [`INSTALL.md`](./INSTALL.md).
 
 > **nginx edit gotcha:** the `nginx` container bind-mounts `nginx.conf` as a
 > single file. Editing it creates a new inode, so `nginx -s reload` keeps reading
 > the *old* file. After any edit, recreate the container:
 > `docker compose -f ../nginx/docker-compose.yaml up -d --force-recreate nginx`.
 
-> **LAN caveat:** a LAN device that reaches the site through the public tunnel
-> egresses as the LAN's *public* IP. If that public IP is `24.150.9.204`, it is
-> gated like any other request from that address — the LAN carve-out only applies
-> to direct-to-host access showing a `192.168.88.0/24` source.
+> **LAN caveat:** the `192.168.88.0/24` carve-out only applies to
+> **direct-to-host** access showing that source. A LAN device reaching the site
+> through the public tunnel egresses as the LAN's *public* IP — which is gated
+> like any other client unless you also whitelist it.
 
 ## Privacy properties & their limits
 
