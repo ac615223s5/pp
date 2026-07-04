@@ -136,6 +136,7 @@ async function withinRefillBuffer() {
   if (!cfg || !cfg.requestsPerToken) return false;
   const reserveTokens = Math.ceil(cfg.refillBufferRequests / cfg.requestsPerToken);
   const tokens = await countTokens(await openDB());
+  if (tokens < 0) return false; // couldn't read the pool — don't force a refill
   return tokens <= reserveTokens;
 }
 

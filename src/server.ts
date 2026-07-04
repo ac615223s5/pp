@@ -55,6 +55,14 @@ async function main() {
     res.json({ ok: true, epoch: state.epoch });
   });
 
+  // These reflect live state/config — never cache them. A stale /pp/config
+  // (old requestsPerToken) would make the status page's request count wildly
+  // wrong and disagree with the service worker.
+  app.use(['/pp/config', '/pp/points', '/pp/token-key'], (_req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+  });
+
   // Public key set (RFC 9578 issuer directory). The activation page reads the
   // token-key from here to blind against.
   app.get('/pp/token-key', (_req, res) => {
