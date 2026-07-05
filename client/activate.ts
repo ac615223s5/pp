@@ -113,6 +113,12 @@ async function activate() {
     setStatus('Enter your invite code.', 'err');
     return;
   }
+  // SW + WebCrypto need a secure context; without one the flow can't work. Fail
+  // loudly instead of hanging on "Setting up…" (the http:// symptom).
+  if (!self.isSecureContext) {
+    setStatus('This page must be opened over https:// — check the address bar.', 'err');
+    return;
+  }
   inFlight = true;
   goBtn.disabled = true;
   setStatus('Setting up…');
@@ -306,6 +312,20 @@ async function ensureServiceWorker(): Promise<void> {
 }
 
 async function init() {
+  // Service workers and WebCrypto (crypto.subtle, used by the blind-RSA workers)
+  // are secure-context ONLY. Over plain http:// they're simply absent, so the
+  // whole flow wedges silently on "Setting up…". This origin is only ever meant
+  // to be reached via https (nginx terminates TLS), so upgrade an http:// visit
+  // in place rather than let it fail. localhost is a secure context, so skip it.
+  if (
+    location.protocol === 'http:' &&
+    location.hostname !== 'localhost' &&
+    location.hostname !== '127.0.0.1'
+  ) {
+    location.replace('https://' + location.host + location.pathname + location.search);
+    return;
+  }
+
   const params = new URLSearchParams(location.search);
 
   // Ensure the gate's service worker is installed and active on EVERY visit to
