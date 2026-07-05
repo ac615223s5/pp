@@ -272,12 +272,17 @@ extension exemption.
 
 ## Step 4 — Issue an invite code
 
-Codes are single-use and carry a per-code quota (how many tokens it mints):
+Two kinds of code. **Single-use** codes mint one batch of `--quota` tokens then
+die. **Faucet** codes (`--daily`) accrue tokens per day up to a cap and dispense
+everything built up each time they're entered — a reusable standing grant.
 
 ```bash
 docker compose exec privacy-pass node dist/admin.js new-code --quota 500
-# created ABCDE-FGHJK-LMNPQ  (quota 500)
-# link: https://example.com/pp/activate?code=ABCDE-FGHJK-LMNPQ
+# ABCDE-FGHJK-LMNPQ  (quota 500)  https://example.com/pp/activate?code=ABCDE-FGHJK-LMNPQ
+docker compose exec privacy-pass node dist/admin.js new-code --quota 500 --count 10  # batch
+
+# Faucet: 50 tokens/day, cap 500. Starts full; re-enter to collect what accrued.
+docker compose exec privacy-pass node dist/admin.js new-code --daily 50 --cap 500
 
 docker compose exec privacy-pass node dist/admin.js list-codes
 docker compose exec privacy-pass node dist/admin.js revoke-code ABCDE-FGHJK-LMNPQ  # unused only
@@ -315,7 +320,8 @@ All via `.env` (read once at startup — recreate the container to apply changes
 | `PP_PORT` | `8787` | Port the service listens on inside the container. |
 | `PP_ISSUER_NAME` | `quetre…` | Cosmetic issuer label. |
 | `PP_GATED_ORIGIN` | `https://…` | Base URL used only to print activation links in the admin CLI. |
-| `PP_QUOTA_DEFAULT` | `500` | Default `--quota` for `new-code`. |
+| `PP_QUOTA_DEFAULT` | `500` | Default `--quota` (and faucet `--cap`) for `new-code`. |
+| `PP_ACCRUAL_PERIOD_MS` | `86400000` | Accrual period for faucet (`--daily`) codes. |
 | `PP_POINTS_PER_TOKEN` | `1000000` | Points a token adds to a session. |
 | `PP_POINTS_PER_REQUEST` | `1000` | Points each gated request draws. `token/request` = requests per token. |
 | `PP_REFILL_BUFFER_REQUESTS` | `5000` | When the **token pool** falls to this many requests of reserve, new navigations are steered to re-activate (top up your code supply). |

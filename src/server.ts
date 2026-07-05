@@ -92,11 +92,23 @@ async function main() {
   app.get('/pp/issue-info', (req, res) => {
     const code = String(req.query.code ?? '');
     const row = store.getCode(code);
-    if (!row || row.used) {
+    if (!row) {
       res.status(404).json({ error: 'unknown_or_used' });
       return;
     }
-    res.json({ quota: row.quota });
+    const available = store.availableTokens(row, config.accrualPeriodMs);
+    // Single-use, already spent.
+    if (row.daily <= 0 && row.used) {
+      res.status(404).json({ error: 'unknown_or_used' });
+      return;
+    }
+    // Faucet with nothing built up yet — tell the client to come back later.
+    if (row.daily > 0 && available < 1) {
+      res.status(429).json({ error: 'empty', daily: row.daily });
+      return;
+    }
+    // `quota` = how many tokens to generate now (the accrued amount for faucets).
+    res.json({ quota: available, daily: row.daily, cap: row.quota });
   });
 
   // Redeem an invite code for a batch of blind signatures.
@@ -111,9 +123,9 @@ async function main() {
     }
 
     // Validate without consuming, so a signing failure doesn't burn the code.
-    const check = store.validateForIssue(code, blinded.length);
+    const check = store.validateForIssue(code, blinded.length, config.accrualPeriodMs);
     if (check !== 'ok') {
-      const map = { unknown: 404, used: 409, over_quota: 400 } as const;
+      const map = { unknown: 404, used: 409, empty: 429, over_quota: 400 } as const;
       res.status(map[check]).json({ error: check });
       return;
     }
@@ -129,9 +141,10 @@ async function main() {
     }
 
     // Consume the code only now. If a concurrent request already consumed it
-    // (double-submit race), this loser 409s and its signatures are discarded —
-    // exactly one activation ever gets tokens.
-    if (!store.markUsed(code)) {
+    // (double-submit race), or a faucet drained below this batch meanwhile, this
+    // loser 409s and its signatures are discarded — exactly one activation per
+    // claim ever gets tokens.
+    if (!store.consumeForIssue(code, blinded.length, config.accrualPeriodMs)) {
       res.status(409).json({ error: 'used' });
       return;
     }

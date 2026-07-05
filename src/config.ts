@@ -5,6 +5,10 @@ export const config = {
   issuerName: process.env.PP_ISSUER_NAME ?? 'quetre.example.com',
   gatedOrigin: process.env.PP_GATED_ORIGIN ?? 'https://quetre.example.com',
   quotaDefault: Number(process.env.PP_QUOTA_DEFAULT ?? 500),
+  // Accrual period for "faucet" codes (--daily): how long it takes to earn one
+  // day's worth of tokens. Default 24h; lower it (e.g. 60000) to test accrual
+  // without waiting a real day.
+  accrualPeriodMs: Number(process.env.PP_ACCRUAL_PERIOD_MS ?? 24 * 3600 * 1000),
   dbPath: process.env.PP_DB_PATH ?? '/data/pp.db',
   keyDir: process.env.PP_KEY_DIR ?? '/data/keys',
 

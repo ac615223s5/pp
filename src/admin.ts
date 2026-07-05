@@ -1,7 +1,13 @@
 // Operator CLI for invite codes. Run inside the container, e.g.:
 //   docker compose exec privacy-pass node dist/admin.js new-code --quota 500
+//   docker compose exec privacy-pass node dist/admin.js new-code --quota 500 --count 10
+//   docker compose exec privacy-pass node dist/admin.js new-code --daily 50 --cap 500
 //   docker compose exec privacy-pass node dist/admin.js list-codes
 //   docker compose exec privacy-pass node dist/admin.js revoke-code XXXXX-XXXXX-XXXXX
+//
+// Single-use codes (--quota N) mint one batch of N tokens, then die. Faucet
+// codes (--daily N) accrue N tokens per day up to a cap (--cap, default the
+// quota default) and dispense everything built up each time they're entered.
 
 import { randomBytes } from 'node:crypto';
 import { config } from './config.js';
@@ -30,16 +36,33 @@ function main() {
 
   switch (cmd) {
     case 'new-code': {
-      const quota = Number(argValue('--quota') ?? config.quotaDefault);
-      if (!Number.isInteger(quota) || quota < 1) {
-        console.error('quota must be a positive integer');
+      // Faucet code when --daily is given; --cap (default quota default) is the
+      // accumulation ceiling stored in the quota column. Otherwise single-use
+      // with --quota tokens.
+      const dailyArg = argValue('--daily');
+      const daily = dailyArg !== undefined ? Number(dailyArg) : 0;
+      if (dailyArg !== undefined && (!Number.isInteger(daily) || daily < 1)) {
+        console.error('daily must be a positive integer');
         process.exit(1);
       }
-      const code = generateCode();
-      store.createCode(code, quota);
-      console.log(`created ${code}  (quota ${quota})`);
-      // Shareable activation link (prefills the code; user still clicks Activate).
-      console.log(`link: ${config.gatedOrigin}/pp/activate?code=${code}`);
+      const quotaArg = daily > 0 ? argValue('--cap') : argValue('--quota');
+      const quota = Number(quotaArg ?? config.quotaDefault);
+      if (!Number.isInteger(quota) || quota < 1) {
+        console.error(`${daily > 0 ? 'cap' : 'quota'} must be a positive integer`);
+        process.exit(1);
+      }
+      const count = Number(argValue('--count') ?? 1);
+      if (!Number.isInteger(count) || count < 1) {
+        console.error('count must be a positive integer');
+        process.exit(1);
+      }
+      const label = daily > 0 ? `faucet ${daily}/day, cap ${quota}` : `quota ${quota}`;
+      for (let i = 0; i < count; i++) {
+        const code = generateCode();
+        store.createCode(code, quota, daily, config.accrualPeriodMs);
+        // Shareable activation link (prefills the code; user still clicks Activate).
+        console.log(`${code}  (${label})  ${config.gatedOrigin}/pp/activate?code=${code}`);
+      }
       break;
     }
     case 'list-codes': {
@@ -49,8 +72,12 @@ function main() {
         break;
       }
       for (const r of rows) {
-        const state = r.used ? 'USED' : 'unused';
-        console.log(`${r.code}  quota=${r.quota}  ${state}`);
+        if (r.daily > 0) {
+          const avail = store.availableTokens(r, config.accrualPeriodMs);
+          console.log(`${r.code}  faucet=${r.daily}/day  cap=${r.quota}  available=${avail}`);
+        } else {
+          console.log(`${r.code}  quota=${r.quota}  ${r.used ? 'USED' : 'unused'}`);
+        }
       }
       break;
     }
@@ -78,7 +105,7 @@ function main() {
     }
     default:
       console.error(
-        'commands: new-code [--quota N] | list-codes | revoke-code <code> | bypass-link',
+        'commands: new-code [--quota N | --daily N [--cap N]] [--count N] | list-codes | revoke-code <code> | bypass-link',
       );
       process.exit(1);
   }

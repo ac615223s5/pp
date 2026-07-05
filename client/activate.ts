@@ -121,10 +121,16 @@ async function activate() {
     // 1. Register the service worker so it can attach tokens site-wide.
     await ensureServiceWorker();
 
-    // 2. Validate the code and learn how many tokens to make.
+    // 2. Validate the code and learn how many tokens to make. For a faucet code
+    //    with nothing accrued yet the server answers 429 {error:'empty'}.
     const info = await fetch(`/pp/issue-info?code=${encodeURIComponent(code)}`);
     if (!info.ok) {
-      fail('That code is invalid or already used.');
+      const err = (await info.json().catch(() => ({}))) as { error?: string };
+      fail(
+        err.error === 'empty'
+          ? 'No requests have built up on this code yet — check back later.'
+          : 'That code is invalid or already used.',
+      );
       return;
     }
     const { quota } = (await info.json()) as { quota: number };

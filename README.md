@@ -105,12 +105,24 @@ docker exec nginx nginx -t && docker exec nginx nginx -s reload
 ## Issuing codes
 
 ```sh
+# Single-use: one batch of N tokens, then dead.
 docker compose exec privacy-pass node dist/admin.js new-code --quota 500
-#   created  MW4TM-Z3GBR-NYTSX  (quota 500)
-#   link: https://quetre.example.com/pp/activate?code=MW4TM-Z3GBR-NYTSX
+#   MW4TM-Z3GBR-NYTSX  (quota 500)  https://quetre.example.com/pp/activate?code=MW4TM-Z3GBR-NYTSX
+docker compose exec privacy-pass node dist/admin.js new-code --quota 500 --count 10   # ten at once
+
+# Faucet: reusable code that accrues 50 tokens/day up to a 500 cap, and dispenses
+# everything built up each time it's entered (stacks into the device pool).
+docker compose exec privacy-pass node dist/admin.js new-code --daily 50 --cap 500
+
 docker compose exec privacy-pass node dist/admin.js list-codes
 docker compose exec privacy-pass node dist/admin.js revoke-code MW4TM-Z3GBR-NYTSX   # unused codes only
 ```
+
+A **faucet code** starts full (first entry yields the whole cap), then refills at
+`--daily` per day up to `--cap`. Re-entering it dispenses all that has
+accumulated since last time — a low-friction standing grant for a trusted user,
+without ever handing out an unlimited code. The accrual period is
+`PP_ACCRUAL_PERIOD_MS` (default 24h).
 
 **What to tell a user:** send them the `link:` line — it opens the activation
 page with the code prefilled; they just click **Activate** (the code is never
