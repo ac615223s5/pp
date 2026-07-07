@@ -166,6 +166,15 @@ async function main() {
       return;
     }
     const cookie = req.header('cookie');
+    const dbg = (outcome: string) => {
+      if (!config.debug) return;
+      const sid = readCookie(cookie, config.sessionCookie);
+      console.log(
+        `[verify] ${outcome} sw=${req.header('x-pp-sw') ? 1 : 0} ` +
+          `cookie=${sid ? sid.slice(0, 8) : '-'} hasAuth=${req.header('authorization') ? 1 : 0} ` +
+          `uri=${req.header('x-original-uri') ?? req.header('x-pp-uri') ?? '?'}`,
+      );
+    };
 
     // 0. Operator bypass: a valid bypass cookie skips metering entirely — no
     //    token redeemed, no session points drawn. (Off unless a password is set.)
@@ -180,6 +189,7 @@ async function main() {
     if (sid) {
       const remaining = store.spendSession(sid, cost);
       if (remaining !== null) {
+        dbg(`ride ${remaining}`);
         res.set('X-PP-Points', String(remaining)).status(204).end();
         return;
       }
@@ -191,6 +201,7 @@ async function main() {
       const newId = randomBytes(16).toString('hex'); // random, not derived from token
       const remaining = config.pointsPerToken - cost;
       store.createSession(newId, remaining);
+      dbg(`REDEEM->newsession ${newId.slice(0, 8)}`);
       res
         .set(
           'Set-Cookie',
@@ -204,6 +215,7 @@ async function main() {
       return;
     }
 
+    dbg(`401 (${result.status})`);
     res.set('WWW-Authenticate', 'PrivateToken').status(401).end();
   });
 
@@ -216,6 +228,7 @@ async function main() {
   app.post('/pp/refill', async (req, res) => {
     const result = await pp.verifyHeader(req.header('authorization'));
     if (result.status !== 'ok') {
+      if (config.debug) console.log(`[refill] 401 (${result.status})`);
       res.status(401).json({ error: result.status });
       return;
     }
@@ -223,6 +236,7 @@ async function main() {
     if (sid) {
       const points = store.topUpSession(sid, config.pointsPerToken);
       if (points !== null) {
+        if (config.debug) console.log(`[refill] TOPUP ${sid.slice(0, 8)} -> ${points}`);
         res.set('X-PP-Points', String(points)).json({ points });
         return;
       }
@@ -230,6 +244,7 @@ async function main() {
     // No live session — open one and set the cookie.
     const newId = randomBytes(16).toString('hex');
     store.createSession(newId, config.pointsPerToken);
+    if (config.debug) console.log(`[refill] REDEEM->newsession ${newId.slice(0, 8)} (had cookie=${sid ? sid.slice(0, 8) : '-'})`);
     res
       .set(
         'Set-Cookie',

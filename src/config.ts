@@ -11,6 +11,9 @@ export const config = {
   accrualPeriodMs: Number(process.env.PP_ACCRUAL_PERIOD_MS ?? 24 * 3600 * 1000),
   dbPath: process.env.PP_DB_PATH ?? '/data/pp.db',
   keyDir: process.env.PP_KEY_DIR ?? '/data/keys',
+  // Verbose per-request logging at the gate (token redeem / session ride /
+  // top-up). Off by default; flip PP_DEBUG=1 to diagnose token spend.
+  debug: process.env.PP_DEBUG === '1',
 
   // Points-metered sessions: redeeming one token opens a session worth
   // pointsPerToken; each gated request draws pointsPerRequest. Default
