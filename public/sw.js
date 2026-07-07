@@ -88,7 +88,12 @@ async function navigateOwner(clientId) {
 function ride(request) {
   const headers = new Headers(request.headers);
   headers.set('X-PP-SW', '1');
-  return fetch(new Request(request, { headers }));
+  // Force cookies on EVERY metered fetch. Some resources — notably the web app
+  // manifest — are fetched credential-less by the browser; without this they
+  // reach the gate cookieless, 401, and trick the SW into "renewing" a session
+  // that was actually fine, popping (and losing) a token the server ignores.
+  // Same-origin only here (cross-origin returns early), so include == same-origin.
+  return fetch(new Request(request, { headers, credentials: 'include' }));
 }
 
 // Open a fresh session by spending exactly one token. Single-flight: when a
