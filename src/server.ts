@@ -182,7 +182,14 @@ async function main() {
       res.set('X-PP-Bypass', '1').status(204).end();
       return;
     }
-    const cost = config.pointsPerRequest;
+    // Per-request cost. nginx can override the default via an X-PP-Cost header
+    // set per-location (e.g. cheaper media requests) — clamped to a sane range;
+    // anything absent/invalid falls back to pointsPerRequest.
+    const hdrCost = Number(req.header('x-pp-cost'));
+    const cost =
+      Number.isInteger(hdrCost) && hdrCost >= 1 && hdrCost <= config.pointsPerToken
+        ? hdrCost
+        : config.pointsPerRequest;
 
     // 1. Ride an existing session.
     const sid = readCookie(cookie, config.sessionCookie);
