@@ -166,10 +166,13 @@ server {
     # The activation page, issuance, key directory, service worker, etc.
     # ^~ so /pp/*.js is NOT swallowed by the static regex below. Big body +
     # long timeouts because a large token batch (/pp/issue) is multi-MB.
+    # Forward the real Host: /pp/config selects per-host settings (e.g.
+    # PP_TOPUP_THRESHOLD_OVERRIDES) from it.
     location ^~ /pp/ {
         client_max_body_size 64m;
         proxy_read_timeout   300s;
         proxy_send_timeout   300s;
+        proxy_set_header Host $host;
         proxy_pass PP;
     }
 
@@ -354,6 +357,7 @@ All via `.env` (read once at startup — recreate the container to apply changes
 | `PP_POINTS_PER_MEDIA_REQUEST` | `100` | Points a **media** request draws (images + audio/video, detected from the request URI). Cheaper so image-heavy browsing doesn't drain a budget, while a direct media scrape still costs points. |
 | `PP_REFILL_BUFFER_REQUESTS` | `5000` | When the **token pool** falls to this many requests of reserve, new navigations are steered to re-activate (top up your code supply). |
 | `PP_SESSION_TOPUP_THRESHOLD` | `200000` | Points; when a live **session** drops below this the SW spends a token to top it up (keeps media funded). Size ≥ the request cost of the longest single video. |
+| `PP_TOPUP_THRESHOLD_OVERRIDES` | `{}` | JSON object of `hostname -> points` overriding the threshold per gated host (e.g. a large value for a video frontend). Needs `proxy_set_header Host $host;` in the `^~ /pp/` location (in the template above). |
 | `PP_BYPASS_PASSWORD` | `` (empty) | If set, `/pp/activate?pw=…` mints a signed **operator bypass cookie** that skips metering entirely. Empty = feature off. Breaks unlinkability — keep it secret. |
 | `PP_SESSION_COOKIE` | `pp_session` | Session cookie name. |
 | `PP_DB_PATH` | `/data/pp.db` | SQLite path (inside the mounted volume). |

@@ -142,13 +142,19 @@ async function main() {
   });
 
   // Client-visible metering config (for the SW's refill buffer + status page).
-  app.get('/pp/config', (_req, res) => {
+  // The top-up threshold is per-host: the SW fetches this on its own origin,
+  // so req.hostname (the forwarded Host header) selects the override — a
+  // video-heavy host can bank a much larger prefunded session than the rest.
+  app.get('/pp/config', (req, res) => {
+    const threshold =
+      config.topUpThresholdOverrides[req.hostname?.toLowerCase() ?? ''] ??
+      config.sessionTopUpThreshold;
     res.json({
       pointsPerToken: config.pointsPerToken,
       pointsPerRequest: config.pointsPerRequest,
       requestsPerToken: Math.floor(config.pointsPerToken / config.pointsPerRequest),
       refillBufferRequests: config.refillBufferRequests,
-      sessionTopUpThreshold: config.sessionTopUpThreshold,
+      sessionTopUpThreshold: threshold,
     });
   });
 

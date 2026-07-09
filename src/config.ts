@@ -38,6 +38,29 @@ function parsePackages(json: string): Package[] {
   });
 }
 
+// Parse PP_TOPUP_THRESHOLD_OVERRIDES: a JSON object mapping hostname ->
+// per-host session top-up threshold (points). Lets a video-heavy host (e.g.
+// piped) bank a much larger prefunded session than the small default that
+// keeps other hosts' sessions private. Throws on malformed config so a bad
+// deploy fails loudly at startup.
+function parseThresholdOverrides(json: string): Record<string, number> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(json);
+  } catch {
+    throw new Error('PP_TOPUP_THRESHOLD_OVERRIDES is not valid JSON');
+  }
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw))
+    throw new Error('PP_TOPUP_THRESHOLD_OVERRIDES must be a JSON object of host -> points');
+  const out: Record<string, number> = {};
+  for (const [host, value] of Object.entries(raw)) {
+    if (!host || typeof value !== 'number' || !Number.isFinite(value) || value < 0)
+      throw new Error(`PP_TOPUP_THRESHOLD_OVERRIDES["${host}"]: value must be a non-negative number`);
+    out[host.toLowerCase()] = value;
+  }
+  return out;
+}
+
 const btcpayUrl = (process.env.PP_BTCPAY_URL ?? '').replace(/\/+$/, '');
 const btcpayApiKey = process.env.PP_BTCPAY_API_KEY ?? '';
 const btcpayStoreId = process.env.PP_BTCPAY_STORE_ID ?? '';
@@ -93,6 +116,19 @@ export const config = {
   // session at the nginx gate but can't trigger the SW's reactive renewal.
   // Default 200_000 = 200 requests of headroom at the 1_000/request rate.
   sessionTopUpThreshold: Number(process.env.PP_SESSION_TOPUP_THRESHOLD ?? 200_000),
+  // Per-host overrides for the top-up threshold, keyed by lowercase hostname.
+  // The SW reads the threshold from /pp/config on its own origin, so raising it
+  // for one host makes that host's SW bank a bigger session (many tokens'
+  // worth) while the SW is awake — runway for SW-invisible playback — without
+  // growing other hosts' sessions. Token VALUE stays global on purpose: a
+  // bigger threshold pre-pays more tokens into the session, it does not make
+  // tokens go further, so per-euro economics are identical on every host.
+  // REQUIRES nginx to forward the original Host header on ^~ /pp/
+  // (proxy_set_header Host $host) — otherwise the lookup sees the upstream
+  // address and every host gets the default.
+  topUpThresholdOverrides: parseThresholdOverrides(
+    process.env.PP_TOPUP_THRESHOLD_OVERRIDES ?? '{}',
+  ),
   // sessions with fewer than one request's worth of points, or older than this,
   // are swept periodically.
   sessionMaxAgeMs: Number(process.env.PP_SESSION_MAX_AGE_MS ?? 30 * 24 * 3600 * 1000),

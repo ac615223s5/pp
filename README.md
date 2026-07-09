@@ -289,6 +289,17 @@ Because the gate meters **per request**, what to exempt matters. Three classes:
 > navigation, SW asleep throughout) can still drain the session and stall until a
 > reload; raise `PP_SESSION_TOPUP_THRESHOLD` if that matters.
 
+The threshold can also be raised **per host**: `PP_TOPUP_THRESHOLD_OVERRIDES`
+(JSON, `hostname -> points`) is applied by `/pp/config` from the request's Host
+header, and each host's SW reads its own origin's config. A video-heavy host
+can therefore bank a multi-token prefunded session (the SW trickles one token
+per top-up until the threshold is met while it's awake) while every other host
+keeps the small, more private default. Token *value* deliberately stays global
+— the override pre-pays more into the session; it never makes tokens cheaper on
+one host, so there's nothing for a scraper to arbitrage. nginx must forward the
+original Host on `^~ /pp/` (`proxy_set_header Host $host;`) or every host sees
+the default.
+
 Per-service media routes: redlib `/preview`,`/img`,`/thumb`,`/vid`,`/hls`; nitter
 `/pic`,`/video`; rimgo root `/{id}.{ext}` (its own UI is under `/static`). None
 are exempted — they fall through to `location /` and meter.
