@@ -324,6 +324,7 @@ All via `.env` (read once at startup — recreate the container to apply changes
 | `PP_ACCRUAL_PERIOD_MS` | `86400000` | Accrual period for faucet (`--daily`) codes. |
 | `PP_POINTS_PER_TOKEN` | `1000000` | Points a token adds to a session. |
 | `PP_POINTS_PER_REQUEST` | `1000` | Points each gated request draws. `token/request` = requests per token. |
+| `PP_POINTS_PER_MEDIA_REQUEST` | `100` | Points a **media** request draws (images + audio/video, detected from the request URI). Cheaper so image-heavy browsing doesn't drain a budget, while a direct media scrape still costs points. |
 | `PP_REFILL_BUFFER_REQUESTS` | `5000` | When the **token pool** falls to this many requests of reserve, new navigations are steered to re-activate (top up your code supply). |
 | `PP_SESSION_TOPUP_THRESHOLD` | `200000` | Points; when a live **session** drops below this the SW spends a token to top it up (keeps media funded). Size ≥ the request cost of the longest single video. |
 | `PP_BYPASS_PASSWORD` | `` (empty) | If set, `/pp/activate?pw=…` mints a signed **operator bypass cookie** that skips metering entirely. Empty = feature off. Breaks unlinkability — keep it secret. |

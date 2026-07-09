@@ -21,6 +21,22 @@ function readCookie(cookieHeader: string | undefined, name: string): string | nu
   return m ? m[1] : null;
 }
 
+// Media URIs meter cheaper (see config.pointsPerMediaRequest). Mirrors the old
+// nginx $pp_media_cost map: match by file extension (images + audio/video), plus
+// Nitter's extensionless encoded media paths (/pic/<enc>, /video/<enc>, with the
+// format in the query string) by prefix. $request_uri includes the query, so the
+// trailing (?|$) anchors an extension that's immediately followed by ? or end.
+const MEDIA_EXT_RE =
+  /\.(?:jpg|jpeg|png|gif|webp|bmp|avif|mp4|webm|m4v|mov|ts|m3u8|mpd|mp3|m4a|ogg|oga|opus|wav)(?:\?|$)/i;
+const MEDIA_PREFIX_RE = /^\/(?:pic|video)\//i;
+
+function costForUri(uri: string | undefined): number {
+  if (uri && (MEDIA_EXT_RE.test(uri) || MEDIA_PREFIX_RE.test(uri))) {
+    return config.pointsPerMediaRequest;
+  }
+  return config.pointsPerRequest;
+}
+
 // Constant-time password check (hash both sides so length isn't leaked).
 function bypassPasswordMatches(input: string): boolean {
   const a = createHash('sha256').update(input).digest();
@@ -182,14 +198,11 @@ async function main() {
       res.set('X-PP-Bypass', '1').status(204).end();
       return;
     }
-    // Per-request cost. nginx can override the default via an X-PP-Cost header
-    // set per-location (e.g. cheaper media requests) — clamped to a sane range;
-    // anything absent/invalid falls back to pointsPerRequest.
-    const hdrCost = Number(req.header('x-pp-cost'));
-    const cost =
-      Number.isInteger(hdrCost) && hdrCost >= 1 && hdrCost <= config.pointsPerToken
-        ? hdrCost
-        : config.pointsPerRequest;
+    // Per-request cost. Media (images + audio/video) meters cheaper than the
+    // default so image-heavy browsing doesn't drain a budget, while a direct
+    // media scrape still costs points. Derived from the original request URI
+    // (forwarded by the gate as X-Original-URI); everything else pays the default.
+    const cost = costForUri(req.header('x-original-uri'));
 
     // 1. Ride an existing session.
     const sid = readCookie(cookie, config.sessionCookie);

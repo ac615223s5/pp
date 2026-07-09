@@ -21,6 +21,13 @@ export const config = {
   // pointsPerRequest to fall back to one-token-per-request (no session reuse).
   pointsPerToken: Number(process.env.PP_POINTS_PER_TOKEN ?? 1_000_000),
   pointsPerRequest: Number(process.env.PP_POINTS_PER_REQUEST ?? 1_000),
+  // Cheaper per-request cost for media (images + audio/video). The gate forwards
+  // the original request URI as X-Original-URI and /verify charges this instead
+  // of pointsPerRequest when the URI looks like media — so image-heavy browsing
+  // doesn't drain a budget, while a direct media scrape still costs points.
+  // Default 100 (10x cheaper than the 1_000 default). Replaces the old nginx
+  // $pp_media_cost map / X-PP-Cost header plumbing.
+  pointsPerMediaRequest: Number(process.env.PP_POINTS_PER_MEDIA_REQUEST ?? 100),
   sessionCookie: process.env.PP_SESSION_COOKIE ?? 'pp_session',
 
   // Operator bypass. When PP_BYPASS_PASSWORD is set (non-empty), entering it on
