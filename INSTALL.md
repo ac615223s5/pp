@@ -279,9 +279,12 @@ extension exemption.
 
 ## Step 4 — Issue an invite code
 
-Two kinds of code. **Single-use** codes mint one batch of `--quota` tokens then
-die. **Faucet** codes (`--daily`) accrue tokens per day up to a cap and dispense
-everything built up each time they're entered — a reusable standing grant.
+Two kinds of code, both drawn in `PP_TOKENS_PER_DRAW`-capped batches (default
+50). **Balance** codes hold `--quota` tokens, drawable across devices and sites
+until empty — the activation page remembers the code and silently draws more
+when a device runs low. **Faucet** codes (`--daily`) accrue tokens per day up
+to a cap and dispense capped draws of what has built up — a reusable standing
+grant.
 
 ```bash
 docker compose exec privacy-pass node dist/admin.js new-code --quota 500
@@ -292,7 +295,7 @@ docker compose exec privacy-pass node dist/admin.js new-code --quota 500 --count
 docker compose exec privacy-pass node dist/admin.js new-code --daily 50 --cap 500
 
 docker compose exec privacy-pass node dist/admin.js list-codes
-docker compose exec privacy-pass node dist/admin.js revoke-code ABCDE-FGHJK-LMNPQ  # unused only
+docker compose exec privacy-pass node dist/admin.js revoke-code ABCDE-FGHJK-LMNPQ  # not-fully-drawn only
 ```
 
 Share the **link** — it prefills the code but still requires the user to click
@@ -317,8 +320,8 @@ with events **InvoiceSettled, InvoiceExpired, InvoiceInvalid** (the `^~ /pp/`
 location already passes it through ungated). Payment methods are whatever the
 store enables — invoices are created without a `paymentMethods` restriction,
 so adding e.g. **Monero** (BTCPay's Monero plugin + a view-only wallet) needs
-no change here beyond the buy-page copy. A settled invoice mints a
-single-use invite code exactly once (webhook redeliveries are no-ops) and the
+no change here beyond the buy-page copy. A settled invoice mints an invite
+code exactly once (webhook redeliveries are no-ops) and the
 buyer claims it at `/pp/claim?ct=<token>` — the claim URL is the only
 credential, so tell buyers to save it. Recovery: `node dist/admin.js
 list-purchases`, or mark the invoice Settled in the BTCPay UI to re-fire
@@ -355,6 +358,7 @@ All via `.env` (read once at startup — recreate the container to apply changes
 | `PP_ISSUER_NAME` | `quetre…` | Cosmetic issuer label. |
 | `PP_GATED_ORIGIN` | `https://…` | Base URL used only to print activation links in the admin CLI. |
 | `PP_QUOTA_DEFAULT` | `500` | Default `--quota` (and faucet `--cap`) for `new-code`. |
+| `PP_TOKENS_PER_DRAW` | `50` | Tokens per activation draw (client default via `/pp/issue-info`, not a server cap). Keep it in the tens — tiny draws let timing link redemptions to codes. |
 | `PP_ACCRUAL_PERIOD_MS` | `86400000` | Accrual period for faucet (`--daily`) codes. |
 | `PP_POINTS_PER_TOKEN` | `1000000` | Points a token adds to a session. |
 | `PP_POINTS_PER_REQUEST` | `1000` | Points each gated request draws. `token/request` = requests per token. |

@@ -18,6 +18,13 @@ export {};
 const DB_NAME = 'pp-tokens';
 const STORE = 'tokens';
 
+// The last code that successfully drew tokens on this origin. Codes are
+// balances drawn in capped batches, so the SW's refill/exhausted redirects can
+// top up from it silently instead of asking the user to re-type it. Cleared
+// only when the server definitively says the code is dead (404), never on
+// network errors.
+const CODE_KEY = 'pp_code';
+
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 1);
@@ -106,18 +113,20 @@ function fail(msg: string) {
   inFlight = false;
 }
 
-async function activate() {
-  if (inFlight) return;
+// Returns true iff a draw completed and tokens landed in IndexedDB (the silent
+// top-up path needs to know whether to bounce back or show the manual form).
+async function activate(): Promise<boolean> {
+  if (inFlight) return false;
   const code = codeInput.value.trim().toUpperCase();
   if (!code) {
     setStatus('Enter your invite code.', 'err');
-    return;
+    return false;
   }
   // SW + WebCrypto need a secure context; without one the flow can't work. Fail
   // loudly instead of hanging on "Setting up…" (the http:// symptom).
   if (!self.isSecureContext) {
     setStatus('This page must be opened over https:// — check the address bar.', 'err');
-    return;
+    return false;
   }
   inFlight = true;
   goBtn.disabled = true;
@@ -132,14 +141,20 @@ async function activate() {
     const info = await fetch(`/pp/issue-info?code=${encodeURIComponent(code)}`);
     if (!info.ok) {
       const err = (await info.json().catch(() => ({}))) as { error?: string };
+      // 404 = the code is definitively dead; forget it so the silent top-up
+      // stops retrying. A 429 faucet just hasn't accrued yet — keep it.
+      if (info.status === 404 && localStorage.getItem(CODE_KEY) === code) {
+        localStorage.removeItem(CODE_KEY);
+      }
       fail(
         err.error === 'empty'
           ? 'No requests have built up on this code yet — check back later.'
-          : 'That code is invalid or already used.',
+          : 'That code is invalid or used up.',
       );
-      return;
+      return false;
     }
-    const { quota } = (await info.json()) as { quota: number };
+    // `quota` = this draw (capped batch); `remaining` = the code's full balance.
+    const { quota, remaining } = (await info.json()) as { quota: number; remaining?: number };
 
     // 3. Fetch the issuer public key (base64url token-key, passed to workers).
     const dir = await (await fetch('/pp/token-key')).json();
@@ -186,12 +201,26 @@ async function activate() {
         body: JSON.stringify({ code, blinded_tokens: blindedAll }),
       });
       if (!resp.ok) {
-        fail(
-          resp.status === 409
-            ? 'This code was already activated. Ask for a new one.'
-            : 'Issuance failed — please try again, or ask for a new code.',
-        );
-        return;
+        if (resp.status === 409) {
+          // Concurrent draws from other devices are legal, so a 409 can mean
+          // "the balance ran short this instant" while the code still holds
+          // tokens. Re-check before forgetting it: only a definitive 404 from
+          // issue-info means the code is dead.
+          const gone =
+            (await fetch(`/pp/issue-info?code=${encodeURIComponent(code)}`).catch(() => null))
+              ?.status === 404;
+          if (gone && localStorage.getItem(CODE_KEY) === code) {
+            localStorage.removeItem(CODE_KEY);
+          }
+          fail(
+            gone
+              ? 'This code has no tokens left. Enter a new one.'
+              : 'This draw collided with another device — try again.',
+          );
+        } else {
+          fail('Issuance failed — please try again, or ask for a new code.');
+        }
+        return false;
       }
       const { signatures } = (await resp.json()) as { signatures: string[] };
 
@@ -227,18 +256,30 @@ async function activate() {
       await addTokens(db, tokensAll);
       const total = await countTokens(db); // cumulative, since codes stack
 
+      // Remember the code for silent top-ups (last successful draw wins).
+      localStorage.setItem(CODE_KEY, code);
+
       bar.hidden = true;
       setStatus(`You're set up — ${total} requests available on this device.`, 'ok');
+      const left = (remaining ?? quota) - quota;
+      if (left > 0) {
+        statusEl.append(
+          document.createElement('br'),
+          `Your code has ${left} tokens left — this device will top up from it automatically.`,
+        );
+      }
       const link = document.createElement('a');
       link.href = '/';
       link.textContent = 'Continue to the site →';
       statusEl.append(document.createElement('br'), link);
+      return true;
     } finally {
       for (const worker of pool) worker.terminate();
     }
   } catch (err) {
     console.error(err);
     fail(`Something went wrong: ${(err as Error).message}`);
+    return false;
   }
 }
 
@@ -311,6 +352,14 @@ async function ensureServiceWorker(): Promise<void> {
   }
 }
 
+// Where a redirect back should land: the same-origin path from ?return=, or
+// '/' when absent/unsafe. Path-only — must start with exactly one '/' (rejects
+// '//host' and the '/\host' browser quirk) and can't smuggle a scheme.
+function returnDest(params: URLSearchParams): string {
+  const ret = params.get('return');
+  return ret && /^\/(?!\/|\\)/.test(ret) ? ret : '/';
+}
+
 async function init() {
   // Service workers and WebCrypto (crypto.subtle, used by the blind-RSA workers)
   // are secure-context ONLY. Over plain http:// they're simply absent, so the
@@ -348,10 +397,31 @@ async function init() {
     const last = Number(sessionStorage.getItem('pp-bounce-ts') || 0);
     if (n > 0 && Date.now() - last > 3000) {
       sessionStorage.setItem('pp-bounce-ts', String(Date.now()));
-      const ret = params.get('return');
-      const dest = ret && ret.startsWith('/') && !ret.startsWith('//') ? ret : '/';
-      location.replace(dest);
+      location.replace(returnDest(params));
       return;
+    }
+  }
+
+  // SW low/empty redirects. With a remembered code (a balance drawn in capped
+  // batches), top up silently and bounce back to where the user was; only fall
+  // through to the manual form when there is no stored code, the draw fails,
+  // or the timestamp gate says we just tried (breaks any redirect loop, e.g. a
+  // draw too small to clear the refill buffer).
+  let silentFailed = false;
+  if (params.get('refill') === '1' || params.get('exhausted') === '1') {
+    const stored = localStorage.getItem(CODE_KEY);
+    const last = Number(sessionStorage.getItem('pp-redraw-ts') || 0);
+    if (stored && Date.now() - last > 5000) {
+      sessionStorage.setItem('pp-redraw-ts', String(Date.now()));
+      codeInput.value = stored;
+      setStatus('Topping up from your saved code…');
+      if (await activate()) {
+        location.replace(returnDest(params));
+        return;
+      }
+      // activate() already set the error copy (and forgot a dead code); show
+      // the manual form without redirecting again.
+      silentFailed = true;
     }
   }
 
@@ -374,10 +444,12 @@ async function init() {
     pwInput.focus();
   }
 
-  if (params.get('exhausted') === '1') {
-    setStatus('Your tokens on this device are used up. Enter a new code to continue.', 'err');
+  if (silentFailed) {
+    // Keep the specific error from the failed silent draw on screen.
+  } else if (params.get('exhausted') === '1') {
+    setStatus('Your tokens on this device are used up. Enter a code to continue.', 'err');
   } else if (params.get('refill') === '1') {
-    setStatus('Running low on requests — activate a new code to top up (they stack).', 'err');
+    setStatus('Running low on requests — enter a code to top up (they stack).', 'err');
   }
 
   // Purchases are env-gated server-side; unhide the "buy one" link only when

@@ -72,6 +72,15 @@ export const config = {
   issuerName: process.env.PP_ISSUER_NAME ?? 'quetre.example.com',
   gatedOrigin: process.env.PP_GATED_ORIGIN ?? 'https://quetre.example.com',
   quotaDefault: Number(process.env.PP_QUOTA_DEFAULT ?? 500),
+  // Default draw size: /pp/issue-info tells clients to generate
+  // min(available, tokensPerDraw) tokens per activation, so a code is drawn
+  // down in batches instead of all at once. A CLIENT default, not a server
+  // cap — /pp/issue accepts any batch up to the code's remaining balance,
+  // because larger draws are anonymity-positive: drawing tens of tokens ahead
+  // of need keeps issuance events temporally decorrelated from redemptions,
+  // while one-token draws would let the operator link redemptions back to
+  // codes by timing.
+  tokensPerDraw: Math.max(1, Math.floor(Number(process.env.PP_TOKENS_PER_DRAW ?? 50))),
   // Accrual period for "faucet" codes (--daily): how long it takes to earn one
   // day's worth of tokens. Default 24h; lower it (e.g. 60000) to test accrual
   // without waiting a real day.

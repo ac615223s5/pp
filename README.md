@@ -20,7 +20,7 @@ issuance guarantees this cryptographically.
 
 - ✅ Issuer + verifier in one Node/TS service, own Docker container.
 - ✅ Blind RSA issuance, publicly-verifiable redemption, atomic double-spend guard.
-- ✅ Invite codes with a per-code quota, single-use, admin CLI.
+- ✅ Invite codes with a per-code quota — a balance drawn in capped batches across devices; admin CLI.
 - ✅ Activation page + service worker + IndexedDB token pool.
 - ✅ nginx `auth_request` integration, **gating every client by default** except a
      `geo`-whitelisted set (LAN `192.168.88.0/24`, WireGuard VPN `10.10.10.0/24`,
@@ -110,45 +110,63 @@ docker exec nginx nginx -t && docker exec nginx nginx -s reload
 ## Issuing codes
 
 ```sh
-# Single-use: one batch of N tokens, then dead.
+# Balance: a shared pool of N tokens, drawn in capped batches until empty.
 docker compose exec privacy-pass node dist/admin.js new-code --quota 500
 #   MW4TM-Z3GBR-NYTSX  (quota 500)  https://quetre.example.com/pp/activate?code=MW4TM-Z3GBR-NYTSX
 docker compose exec privacy-pass node dist/admin.js new-code --quota 500 --count 10   # ten at once
 
-# Faucet: reusable code that accrues 50 tokens/day up to a 500 cap, and dispenses
-# everything built up each time it's entered (stacks into the device pool).
+# Faucet: reusable code that accrues 50 tokens/day up to a 500 cap; each entry
+# dispenses a capped draw of what has built up (stacks into the device pool).
 docker compose exec privacy-pass node dist/admin.js new-code --daily 50 --cap 500
 
 docker compose exec privacy-pass node dist/admin.js list-codes
-docker compose exec privacy-pass node dist/admin.js revoke-code MW4TM-Z3GBR-NYTSX   # unused codes only
+docker compose exec privacy-pass node dist/admin.js revoke-code MW4TM-Z3GBR-NYTSX   # not-fully-drawn codes only
 ```
 
-A **faucet code** starts full (first entry yields the whole cap), then refills at
-`--daily` per day up to `--cap`. Re-entering it dispenses all that has
-accumulated since last time — a low-friction standing grant for a trusted user,
-without ever handing out an unlimited code. The accrual period is
-`PP_ACCRUAL_PERIOD_MS` (default 24h).
+A code is a **balance**, not a one-shot: each activation draws
+`min(remaining, PP_TOKENS_PER_DRAW)` tokens (default 50), so the same code
+works across several devices and sites until the balance is empty. The
+activation page **remembers the last code that drew successfully** (per site,
+in localStorage) and silently draws another batch when the device runs low —
+users type a code once per site per device and then forget about it. Revoking
+a partially-drawn code stops future draws; already-issued tokens stay valid
+(they're unlinkable by design — there is nothing to claw back).
+
+Draw sizing is a privacy parameter, not just UX: draws of tens of tokens made
+ahead of need keep the (code-authenticated, linkable) issuance events
+temporally decorrelated from the (anonymous) redemptions. One-token draws
+would let the operator link redemptions back to codes purely by timing —
+don't set `PP_TOKENS_PER_DRAW` low. The cap is a client default only;
+`/pp/issue` accepts any batch up to the code's remaining balance.
+
+A **faucet code** starts full (first entry yields a first draw immediately),
+then refills at `--daily` per day up to `--cap`. Re-entering it — or the silent
+top-up doing so — dispenses a capped draw of what has accumulated since last
+time — a low-friction standing grant for a trusted user, without ever handing
+out an unlimited code. The accrual period is `PP_ACCRUAL_PERIOD_MS` (default 24h).
 
 **What to tell a user:** send them the `link:` line — it opens the activation
 page with the code prefilled; they just click **Activate** (the code is never
-auto-submitted, so link previews/prefetchers can't burn it). Or: "Visit
-`/pp/activate`, paste this code once." It works on that one browser/device only —
-clearing site data or switching device/browser needs a new code. Codes **stack**,
-so a user can add more later. Users without a code can request one via the Matrix
-link on the activation page.
+auto-submitted, so link previews/prefetchers can't burn a draw). Or: "Visit
+`/pp/activate`, paste this code once." Tokens live in that one browser/device;
+the code's remaining balance can be drawn again on other devices/browsers, or
+after clearing site data. Codes **stack**, so a user can add more later. Users
+without a code can request one via the Matrix link on the activation page.
 
 With points-metered sessions, one token covers `pointsPerToken/pointsPerRequest`
 requests (~2000 here), so a 500-token code ≈ 1M requests. Activation
-blind-signs `quota` tokens in the browser (parallelised across Web Workers), so
-very large quotas still take time — size to expected usage.
+blind-signs one draw's worth of tokens in the browser (parallelised across Web
+Workers), so even huge codes activate in seconds — the balance is drawn down
+over time, not all at once.
 
 ## Selling codes (BTCPay)
 
 Optionally, users can **buy** invite codes with crypto instead of asking for
 one: `/pp/buy` lists fixed packages, payment runs through a **BTCPay Server**
-you operate, and a settled invoice automatically mints a single-use code
-revealed on a claim page. Everything downstream (activation, blind signing,
-metering) is the ordinary invite-code flow.
+you operate, and a settled invoice automatically mints a code revealed on a
+claim page — a balance the buyer can draw on all their devices. Everything
+downstream (activation, blind signing, metering) is the ordinary invite-code
+flow.
 
 **Enable it** by setting all of `PP_BTCPAY_URL`, `PP_BTCPAY_API_KEY`,
 `PP_BTCPAY_STORE_ID`, `PP_BTCPAY_WEBHOOK_SECRET`, and `PP_BTCPAY_PACKAGES`
@@ -336,12 +354,19 @@ are exempted — they fall through to `location /` and meter.
   them; the current session's points are not exported.
 - **Refill buffer:** once the pool is within `PP_REFILL_BUFFER_REQUESTS` (`6000`
   here, ≈ 3 tokens) of empty, the SW steers new **navigations** to
-  `/pp/activate?refill=1` while still serving **sub-resources** from the buffer —
-  so in-flight page loads finish and the user is asked to top up early. Codes
-  stack, so activating another raises the balance and browsing resumes.
+  `/pp/activate?refill=1&return=<path>` while still serving **sub-resources**
+  from the buffer — so in-flight page loads finish and the pool tops up early.
 - **Exhaustion is graceful:** truly out of tokens, a navigation redirects to
-  `/pp/activate?exhausted=1`; a sub-resource uses `WindowClient.navigate` to send
-  the owning tab there rather than leaving a broken page.
+  `/pp/activate?exhausted=1&return=<path>`; a sub-resource uses
+  `WindowClient.navigate` to send the owning tab there rather than leaving a
+  broken page.
+- **Silent top-up:** on either redirect, the activation page draws another
+  batch from the remembered code (localStorage `pp_code`) without user input
+  and bounces straight back to the same-origin `return=` path — the user just
+  sees a brief blink. Only when there is no stored code, or the server says
+  the code is dead (its balance is empty — the stored code is then forgotten),
+  does the manual form appear. A sessionStorage timestamp gate breaks any
+  redirect loop.
 
 ## Large activations (big quotas)
 

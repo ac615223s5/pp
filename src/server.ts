@@ -100,6 +100,16 @@ async function main() {
       `${config.pointsPerToken}/${config.pointsPerRequest} pts ` +
       `(${Math.floor(config.pointsPerToken / config.pointsPerRequest)} reqs/token)`,
   );
+  if (
+    config.tokensPerDraw * Math.floor(config.pointsPerToken / config.pointsPerRequest) <=
+    config.refillBufferRequests
+  ) {
+    console.warn(
+      `[pp] PP_TOKENS_PER_DRAW=${config.tokensPerDraw} is worth fewer requests than ` +
+        `PP_REFILL_BUFFER_REQUESTS=${config.refillBufferRequests} — every draw lands inside ` +
+        `the refill buffer, so the SW will bounce to /pp/activate after each one`,
+    );
+  }
 
   // Periodically sweep spent/old sessions so the table doesn't grow unbounded,
   // and old purchases so the payment<->code link doesn't outlive its purpose.
@@ -222,8 +232,8 @@ async function main() {
       return;
     }
     const available = store.availableTokens(row, config.accrualPeriodMs);
-    // Single-use, already spent.
-    if (row.daily <= 0 && row.used) {
+    // Balance fully drawn.
+    if (row.daily <= 0 && available < 1) {
       res.status(404).json({ error: 'unknown_or_used' });
       return;
     }
@@ -232,8 +242,15 @@ async function main() {
       res.status(429).json({ error: 'empty', daily: row.daily });
       return;
     }
-    // `quota` = how many tokens to generate now (the accrued amount for faucets).
-    res.json({ quota: available, daily: row.daily, cap: row.quota });
+    // `quota` = how many tokens to generate NOW: a capped draw, so one device
+    // doesn't drain the whole balance (the cap is a client default, not a
+    // server limit — /pp/issue accepts any batch <= `remaining`).
+    res.json({
+      quota: Math.min(available, config.tokensPerDraw),
+      remaining: available,
+      daily: row.daily,
+      cap: row.quota,
+    });
   });
 
   // Redeem an invite code for a batch of blind signatures.
@@ -265,10 +282,11 @@ async function main() {
       return;
     }
 
-    // Consume the code only now. If a concurrent request already consumed it
-    // (double-submit race), or a faucet drained below this batch meanwhile, this
-    // loser 409s and its signatures are discarded — exactly one activation per
-    // claim ever gets tokens.
+    // Consume the code only now. Concurrent draws that both fit the remaining
+    // balance both succeed (multi-device draws are the feature); a draw that
+    // would overdraw it — a double-submit of the last batch, or a faucet that
+    // drained meanwhile — loses here, 409s, and its signatures are discarded,
+    // so a code can never over-issue.
     if (!store.consumeForIssue(code, blinded.length, config.accrualPeriodMs)) {
       res.status(409).json({ error: 'used' });
       return;

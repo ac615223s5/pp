@@ -1,5 +1,5 @@
 // SQLite-backed state. Concerns:
-//   invite_codes  - one row per issued code; single-use claim is atomic.
+//   invite_codes  - one row per issued code; balance draws are atomic.
 //   spent_tokens  - redeemed token hashes; double-spend guard is atomic.
 //   sessions      - points-metered session balances.
 //   purchases     - BTCPay invoice -> minted invite code; settle is atomic.
@@ -17,12 +17,17 @@ export interface CodeRow {
   used: number;
   created_at: number;
   used_at: number | null;
-  // Faucet codes: `daily` tokens accrue per accrual period, capped at `quota`,
-  // and every redemption dispenses all that has built up. daily = 0 is an
-  // ordinary single-use code (quota is the one-shot batch size). accrued_at is
-  // the moving low-water mark the accrual is measured from.
+  // Faucet codes: `daily` tokens accrue per accrual period, capped at `quota`.
+  // daily = 0 is an ordinary balance code: a shared pool of `quota` tokens,
+  // drawn in batches (across devices/sites) until empty. accrued_at is the
+  // moving low-water mark faucet accrual is measured from.
   daily: number;
   accrued_at: number | null;
+  // Cumulative tokens dispensed from a balance code (daily = 0). The source of
+  // truth for its remaining balance; always 0 for faucets, whose consumption
+  // state lives in accrued_at. `used`/`used_at` are still written when the
+  // balance empties (legacy compat: revoke guard, operator SQL) but not read.
+  drawn: number;
 }
 
 export interface PurchaseRow {
@@ -87,14 +92,21 @@ export class Store {
     if (!cols.has('accrued_at')) {
       this.db.exec('ALTER TABLE invite_codes ADD COLUMN accrued_at INTEGER');
     }
+    // Migrate pre-balance-code databases: a single-use code that was activated
+    // (used = 1) dispensed its whole quota in one shot.
+    if (!cols.has('drawn')) {
+      this.db.exec('ALTER TABLE invite_codes ADD COLUMN drawn INTEGER NOT NULL DEFAULT 0');
+      this.db.exec('UPDATE invite_codes SET drawn = quota WHERE used = 1');
+    }
   }
 
   // ---- invite codes -------------------------------------------------------
 
-  // Create a single-use code (daily = 0, quota = one-shot batch size) or a
-  // faucet code (daily > 0: `daily` tokens accrue per period up to a cap of
-  // `quota`). A faucet starts "full" — accrued_at is backdated so the first
-  // redemption yields the whole cap, then it refills at `daily` per period.
+  // Create a balance code (daily = 0, quota = total tokens, drawn in batches
+  // until empty) or a faucet code (daily > 0: `daily` tokens accrue per period
+  // up to a cap of `quota`). A faucet starts "full" — accrued_at is backdated
+  // so the first redemption yields the whole cap, then it refills at `daily`
+  // per period.
   createCode(code: string, quota: number, daily = 0, periodMs = 86_400_000): void {
     const now = Date.now();
     const accruedAt =
@@ -118,7 +130,9 @@ export class Store {
       .all() as CodeRow[];
   }
 
-  // Delete an unused code. Returns true if it was removed (spent codes stay).
+  // Delete a code that is not yet fully drawn. Partially-drawn codes are
+  // revocable — already-issued tokens stay valid (unlinkable by design, nothing
+  // to claw back); fully-drawn codes stay for the audit trail.
   revokeCode(code: string): boolean {
     return (
       this.db.prepare('DELETE FROM invite_codes WHERE code = ? AND used = 0').run(code)
@@ -126,11 +140,11 @@ export class Store {
     );
   }
 
-  // How many tokens a code can dispense right now: the full batch for an unused
-  // single-use code, or the accrued-and-capped amount for a faucet code (0 once
-  // a single-use code is spent, or before a faucet has built anything up).
+  // How many tokens a code can dispense right now: the remaining balance for a
+  // balance code, or the accrued-and-capped amount for a faucet code (0 once a
+  // balance is fully drawn, or before a faucet has built anything up).
   availableTokens(row: CodeRow, periodMs: number, now = Date.now()): number {
-    if (row.daily <= 0) return row.used ? 0 : row.quota;
+    if (row.daily <= 0) return Math.max(0, row.quota - row.drawn);
     const at = row.accrued_at ?? row.created_at;
     const accrued = Math.floor(((now - at) / periodMs) * row.daily);
     return Math.max(0, Math.min(row.quota, accrued));
@@ -147,21 +161,38 @@ export class Store {
     const row = this.getCode(code);
     if (!row) return 'unknown';
     const available = this.availableTokens(row, periodMs);
-    if (row.daily <= 0 && row.used) return 'used';
+    if (row.daily <= 0 && available < 1) return 'used';
     if (row.daily > 0 && available < 1) return 'empty';
     if (batchSize < 1 || batchSize > available) return 'over_quota';
     return 'ok';
   }
 
-  // Consume a code for `batchSize` tokens after signing. Single-use codes flip
-  // to used; faucet codes advance their accrual low-water mark by the dispensed
-  // amount's worth of time (keeping the sub-token remainder). Both are atomic
-  // check-and-set: a false return means a concurrent redemption won the race
-  // (or the faucet drained below batchSize meanwhile) → caller 409s.
+  // Consume a code for `batchSize` tokens after signing. Balance codes
+  // decrement their remaining balance; faucet codes advance their accrual
+  // low-water mark by the dispensed amount's worth of time (keeping the
+  // sub-token remainder). Both are atomic check-and-set guarding against
+  // over-issue: concurrent draws that both fit the remaining balance both
+  // succeed (multi-device draws are the feature), but a draw that would
+  // overdraw it returns false → caller 409s.
   consumeForIssue(code: string, batchSize: number, periodMs: number): boolean {
     const row = this.getCode(code);
     if (!row) return false;
-    if (row.daily <= 0) return this.markUsed(code);
+
+    if (row.daily <= 0) {
+      // Decrement the balance only if the batch still fits; stamp used/used_at
+      // when the draw empties it (kept for the revoke guard + operator SQL).
+      return (
+        this.db
+          .prepare(
+            `UPDATE invite_codes
+             SET drawn   = drawn + ?,
+                 used    = CASE WHEN drawn + ? >= quota THEN 1 ELSE used END,
+                 used_at = CASE WHEN drawn + ? >= quota THEN ? ELSE used_at END
+             WHERE code = ? AND daily <= 0 AND drawn + ? <= quota`,
+          )
+          .run(batchSize, batchSize, batchSize, Date.now(), code, batchSize).changes === 1
+      );
+    }
 
     // Advance accrued_at by batchSize/daily periods, but only if the (uncapped)
     // accrual still covers the batch — guarding against a concurrent claim.
@@ -175,16 +206,6 @@ export class Store {
              AND (? - COALESCE(accrued_at, created_at)) * daily >= ? * ?`,
         )
         .run(advance, code, Date.now(), batchSize, periodMs).changes === 1
-    );
-  }
-
-  // Atomically mark a single-use code used. Returns false if it was already used
-  // (a concurrent activation won the race) so the caller can 409.
-  markUsed(code: string): boolean {
-    return (
-      this.db
-        .prepare('UPDATE invite_codes SET used = 1, used_at = ? WHERE code = ? AND used = 0')
-        .run(Date.now(), code).changes === 1
     );
   }
 

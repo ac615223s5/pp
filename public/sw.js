@@ -72,6 +72,22 @@ async function broadcast(msg) {
   for (const c of clients) c.postMessage(msg);
 }
 
+// Build the activate URL for a low/empty pool, carrying where the user was as
+// a same-origin return path — the activation page validates it again, silently
+// draws from its remembered code, and bounces back. /pp/ pages never round-trip.
+function activateUrl(reason, fromUrl) {
+  let ret = '';
+  try {
+    const u = new URL(fromUrl, self.location.origin);
+    if (u.origin === self.location.origin && !u.pathname.startsWith('/pp/')) {
+      ret = '&return=' + encodeURIComponent(u.pathname + u.search);
+    }
+  } catch {
+    /* unparsable — omit the return param */
+  }
+  return '/pp/activate?' + reason + '=1' + ret;
+}
+
 // Graceful exhaustion: only one navigation should fire even if many sub-resources
 // hit the empty pool at once.
 let redirecting = false;
@@ -85,7 +101,7 @@ async function navigateOwner(clientId) {
     // pool is empty — navigates it to itself, reloading forever and making the
     // activation page unreachable.
     if (new URL(client.url).pathname.startsWith('/pp/')) return;
-    await client.navigate('/pp/activate?exhausted=1');
+    await client.navigate(activateUrl('exhausted', client.url));
   } catch {
     /* client gone / navigation not allowed — ignore */
   }
@@ -257,7 +273,7 @@ function exhausted(request, event) {
   dbg(`EXHAUSTED: no tokens left (${request.mode === 'navigate' ? 'redirecting' : 'navigating owner'} to activate)`);
   broadcast({ type: 'pp-remaining', remaining: 0 });
   if (request.mode === 'navigate') {
-    return Response.redirect('/pp/activate?exhausted=1', 302);
+    return Response.redirect(activateUrl('exhausted', request.url), 302);
   }
   // Out of tokens on a sub-resource mid-page: navigate the owning tab to the
   // activation page rather than leaving a half-broken page.
@@ -278,7 +294,7 @@ async function handle(event) {
   //    serving sub-resources so an in-flight load can finish from the buffer.
   if (request.mode === 'navigate' && (await withinRefillBuffer())) {
     dbg('pool within refill buffer, steering navigation to /pp/activate?refill=1');
-    return Response.redirect('/pp/activate?refill=1', 302);
+    return Response.redirect(activateUrl('refill', request.url), 302);
   }
 
   // 1. Try riding the current session cookie.

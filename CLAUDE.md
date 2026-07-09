@@ -15,7 +15,7 @@ npm start              # node dist/server.js
 npm run admin          # node dist/admin.js  (invite-code CLI; usually run in the container)
 
 docker compose up -d --build   # normal deploy; generates RSA keypair in data/keys/ on first run
-docker compose exec privacy-pass node dist/admin.js new-code --quota 500      # single-use code
+docker compose exec privacy-pass node dist/admin.js new-code --quota 500      # balance code (drawn in batches)
 docker compose exec privacy-pass node dist/admin.js new-code --daily 50 --cap 500  # faucet code
 docker compose exec privacy-pass node dist/admin.js list-codes | revoke-code <code> | bypass-link
 ```
@@ -31,7 +31,7 @@ Two halves, sharing no code:
 - **Server** (`src/`, compiled by tsc to `dist/`):
   - `server.ts` — all HTTP routes. `/verify` (the auth_request target: ride session → else redeem token → Set-Cookie), `/pp/issue` (blind-sign a batch for an invite code), `/pp/refill` (token → top up current session), plus token-key/config/points/bypass/activate/static.
   - `pp.ts` — Privacy Pass facade. Issuance deliberately bypasses the library's slow JS `blindSign`: RSABSSA blind-signing is a raw RSA private op, done with `node:crypto` `privateDecrypt` + `RSA_NO_PADDING` (~1ms vs ~350ms, byte-identical). Verification stays on `@cloudflare/privacypass-ts`. No origin/challenge binding — replay is stopped by the spent-set.
-  - `store.ts` — better-sqlite3 (synchronous on purpose: check-and-set primitives are single statements). Four tables: `invite_codes` (single-use + faucet accrual), `spent_tokens` (SHA-256 hashes keyed by key epoch), `sessions` (points balances; `UPDATE … RETURNING` makes spend/top-up atomic), `purchases` (BTCPay invoice → minted code; `settlePurchase`'s pending-only guard + transaction is the exactly-once fulfillment lock).
+  - `store.ts` — better-sqlite3 (synchronous on purpose: check-and-set primitives are single statements). Four tables: `invite_codes` (balance codes with a `drawn` counter + faucet accrual), `spent_tokens` (SHA-256 hashes keyed by key epoch), `sessions` (points balances; `UPDATE … RETURNING` makes spend/top-up atomic), `purchases` (BTCPay invoice → minted code; `settlePurchase`'s pending-only guard + transaction is the exactly-once fulfillment lock).
   - `btcpay.ts` — BTCPay Greenfield API client (invoice create/get via global fetch) + webhook `BTCPay-Sig` HMAC verification over the raw body. The whole purchase feature is env-gated by `config.btcpayEnabled` (all `PP_BTCPAY_*` set + packages non-empty); off ⇒ routes 404, pages hidden.
   - `keys.ts` — one key epoch only. Keypair generated on first run into `PP_KEY_DIR`; the bypass-cookie HMAC secret is derived from the private key, so rotating keys invalidates all tokens *and* bypass cookies. `admin.ts` is a separate entrypoint sharing config + store.
 - **Client** (`client/*.ts` bundled by esbuild into `public/`, plus hand-written `public/sw.js` and HTML):
@@ -40,7 +40,7 @@ Two halves, sharing no code:
 
 ## Invariants to preserve
 
-- **Issue-then-consume ordering** in `/pp/issue`: validate the code, sign, and only then atomically consume it — a signing failure must never burn a code, and a double-submit race must yield exactly one winner (loser gets 409).
+- **Issue-then-consume ordering** in `/pp/issue`: validate the code, sign, and only then atomically decrement its balance (guarded `UPDATE … WHERE drawn + batch <= quota`, `.changes === 1`) — a signing failure must never decrement, and concurrent draws must never over-issue a code's balance (draws that fit both succeed; an overdrawing loser gets 409). Codes are balances drawn in `PP_TOKENS_PER_DRAW`-capped batches (a client default via `/pp/issue-info`, deliberately NOT a server cap); the activation page remembers the code (`localStorage.pp_code`) and silently re-draws on the SW's `refill=`/`exhausted=` redirects.
 - **Privacy:** never log or persist anything linking invite codes to blinded values, tokens, IPs, or user agents. The spent-set stores only token hashes. Purchases may link a BTCPay invoice to a code (delivery requires it; swept after `PP_PURCHASE_RETENTION_MS`) but a minted code must never appear in logs or BTCPay metadata.
 - **Exactly-once purchase fulfillment:** all settlement paths (webhook, claim-status reconciliation) must go through `settleIfPending` → `store.settlePurchase`, whose `status='pending'` guard makes redeliveries/races no-ops. The webhook route must stay mounted *before* the global `express.json` middleware — its HMAC is computed over the raw body.
 - **Metering classes must stay in sync** across three places: the nginx static-exemption regex, the SW's `STATIC_RE`, and the class regexes in `server.ts` (`STREAM_*_RE` → `PP_POINTS_PER_STREAM_REQUEST`, `MEDIA_*_RE` → `PP_POINTS_PER_MEDIA_REQUEST`, else default; derived from `X-Original-URI`). Non-media static is exempt; images meter through the SW; video/audio bypass the SW and ride the pre-funded session. The optional `PP_POINTS_PER_MIB` size component (from `X-PP-Range` / `range=`/`clen=` in the URI) must stay **additive** to the class cost — never a replacement — so a forged size hint can't undercut the flat price.

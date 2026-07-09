@@ -5,9 +5,10 @@
 //   docker compose exec privacy-pass node dist/admin.js list-codes
 //   docker compose exec privacy-pass node dist/admin.js revoke-code XXXXX-XXXXX-XXXXX
 //
-// Single-use codes (--quota N) mint one batch of N tokens, then die. Faucet
-// codes (--daily N) accrue N tokens per day up to a cap (--cap, default the
-// quota default) and dispense everything built up each time they're entered.
+// Balance codes (--quota N) hold a shared pool of N tokens, drawn in capped
+// batches across devices/sites until empty. Faucet codes (--daily N) accrue N
+// tokens per day up to a cap (--cap, default the quota default) and dispense
+// capped draws of whatever has built up each time they're entered.
 
 import { config } from './config.js';
 import { Store } from './store.js';
@@ -25,8 +26,8 @@ function main() {
   switch (cmd) {
     case 'new-code': {
       // Faucet code when --daily is given; --cap (default quota default) is the
-      // accumulation ceiling stored in the quota column. Otherwise single-use
-      // with --quota tokens.
+      // accumulation ceiling stored in the quota column. Otherwise a balance
+      // code with --quota tokens.
       const dailyArg = argValue('--daily');
       const daily = dailyArg !== undefined ? Number(dailyArg) : 0;
       if (dailyArg !== undefined && (!Number.isInteger(daily) || daily < 1)) {
@@ -64,7 +65,10 @@ function main() {
           const avail = store.availableTokens(r, config.accrualPeriodMs);
           console.log(`${r.code}  faucet=${r.daily}/day  cap=${r.quota}  available=${avail}`);
         } else {
-          console.log(`${r.code}  quota=${r.quota}  ${r.used ? 'USED' : 'unused'}`);
+          const state = r.drawn >= r.quota ? 'EXHAUSTED' : r.drawn > 0 ? 'partial' : 'unused';
+          console.log(
+            `${r.code}  quota=${r.quota}  drawn=${r.drawn}  remaining=${r.quota - r.drawn}  ${state}`,
+          );
         }
       }
       break;
@@ -93,7 +97,7 @@ function main() {
         process.exit(1);
       }
       const ok = store.revokeCode(code);
-      console.log(ok ? `revoked ${code}` : `not revoked (unknown or already used): ${code}`);
+      console.log(ok ? `revoked ${code}` : `not revoked (unknown or fully drawn): ${code}`);
       break;
     }
     case 'bypass-link': {
