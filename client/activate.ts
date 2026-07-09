@@ -326,13 +326,25 @@ async function unlock() {
   }
 }
 
-goBtn.addEventListener('click', activate);
-codeInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') activate();
+// Both credentials live in real <form>s with password-type fields so password
+// managers offer to save the code/password on submit and autofill them later.
+// preventDefault keeps the browser from actually POSTing the form — the action
+// URLs only exist for managers to file the entries under.
+document.getElementById('code-form')!.addEventListener('submit', (e) => {
+  e.preventDefault();
+  activate();
 });
-unlockBtn.addEventListener('click', unlock);
-pwInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') unlock();
+document.getElementById('pw-form')!.addEventListener('submit', (e) => {
+  e.preventDefault();
+  unlock();
+});
+
+// The code input is type=password purely for manager heuristics; codes aren't
+// shoulder-surfing secrets on the same level, so let the user unmask to check
+// for typos.
+const showCode = document.getElementById('show-code') as HTMLInputElement | null;
+showCode?.addEventListener('change', () => {
+  codeInput.type = showCode.checked ? 'text' : 'password';
 });
 
 // Register the gate's service worker (scope '/') and wait until it is active,
@@ -431,6 +443,11 @@ async function init() {
   const linkCode = params.get('code');
   if (linkCode) {
     codeInput.value = linkCode.trim().toUpperCase();
+    // The code was visible in the link anyway — unmask so it can be checked.
+    if (showCode) {
+      showCode.checked = true;
+      codeInput.type = 'text';
+    }
     codeInput.focus();
   }
 

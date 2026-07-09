@@ -24,6 +24,18 @@
       }
       /* the bypass password is case- and spacing-sensitive, unlike invite codes */
       input[type='password'] { letter-spacing: normal; text-transform: none; }
+      input[type='checkbox'] { width: auto; }
+      /* visually hidden but present for password managers (display:none fields
+         are skipped by some of them) */
+      .vh {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+      .toggle { display: inline-flex; gap: 0.4rem; align-items: center; margin-top: 0.5rem; }
       details { margin-top: 1.5rem; }
       summary { cursor: pointer; opacity: 0.8; }
       button {
@@ -47,9 +59,17 @@
       on <em>this device only</em>. No account, no tracking &mdash; the server
       cannot link your browsing to your code.
     </p>
-    <label for="code"><strong>Invite code</strong></label>
-    <input id="code" autocomplete="off" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX" />
-    <button id="go">Activate</button>
+    <!-- A real form with a password-type field so password managers offer to
+         save the code on activation and autofill it later. The hidden username
+         names the entry and keeps it distinct from the bypass password. JS
+         intercepts submit; the action is only the URL managers file it under. -->
+    <form id="code-form" method="post" action="/pp/activate">
+      <input class="vh" type="text" name="username" value="invite-code" autocomplete="username" readonly tabindex="-1" aria-hidden="true" />
+      <label for="code"><strong>Invite code</strong></label>
+      <input id="code" name="code" type="password" autocomplete="current-password" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX" />
+      <label class="toggle"><input type="checkbox" id="show-code" /> <small>Show code</small></label>
+      <button id="go" type="submit">Activate</button>
+    </form>
     <progress id="bar" value="0" max="100" hidden></progress>
     <div id="status"></div>
     <p>
@@ -68,9 +88,12 @@
           the operator's own use.</small
         >
       </p>
-      <label for="pw"><strong>Bypass password</strong></label>
-      <input id="pw" type="password" autocomplete="off" spellcheck="false" />
-      <button id="unlock">Unlock</button>
+      <form id="pw-form" method="post" action="/pp/bypass">
+        <input class="vh" type="text" name="username" value="bypass" autocomplete="username" readonly tabindex="-1" aria-hidden="true" />
+        <label for="pw"><strong>Bypass password</strong></label>
+        <input id="pw" name="password" type="password" autocomplete="current-password" spellcheck="false" />
+        <button id="unlock" type="submit">Unlock</button>
+      </form>
     </details>
     <p><small>Clearing site data, or using a new device/browser, needs a new code.</small></p>
     <script src="/pp/activate.js"></script>
