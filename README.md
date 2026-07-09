@@ -289,6 +289,18 @@ Because the gate meters **per request**, what to exempt matters. Three classes:
 > navigation, SW asleep throughout) can still drain the session and stall until a
 > reload; raise `PP_SESSION_TOPUP_THRESHOLD` if that matters.
 
+**Size-based pricing (`PP_POINTS_PER_MIB`):** the gate cannot know a response's
+size when `auth_request` fires, but many bandwidth-heavy requests *declare*
+what they're asking for: media-element range requests send a `Range` header
+(forwarded as `X-PP-Range`), and piped/googlevideo `/videoplayback` URLs carry
+`range=a-b`/`clen=` query params in `X-Original-URI`. When `PP_POINTS_PER_MIB`
+is set, such requests pay their class cost **plus** `ceil(MiB × rate)` — so a
+4K segment costs proportionally more than a 480p one and bulk video pulls pay
+by the terabyte. Additive on purpose: a forged tiny `Range` can never price a
+request *below* its flat class cost, and a client can't understate the span —
+the range is what the upstream serves back. Requests with no size hint stay
+flat, so this changes nothing for HTML/API traffic.
+
 The threshold can also be raised **per host**: `PP_TOPUP_THRESHOLD_OVERRIDES`
 (JSON, `hostname -> points`) is applied by `/pp/config` from the request's Host
 header, and each host's SW reads its own origin's config. A video-heavy host

@@ -32,11 +32,46 @@ const MEDIA_EXT_RE =
   /\.(?:jpg|jpeg|png|gif|webp|bmp|avif|mp4|webm|m4v|mov|ts|m3u8|mpd|mp3|m4a|ogg|oga|opus|wav)(?:\?|$)/i;
 const MEDIA_PREFIX_RE = /^\/(?:pic|video)\//i;
 
-function costForUri(uri: string | undefined): number {
-  if (uri && (MEDIA_EXT_RE.test(uri) || MEDIA_PREFIX_RE.test(uri))) {
-    return config.pointsPerMediaRequest;
+// How many bytes a request declares it is asking for, or null when it carries
+// no size hint. Sources, in order of preference:
+//   1. googlevideo-style query params (piped /videoplayback): range=a-b is the
+//      exact byte span of the segment; clen=N is the full resource length.
+//   2. The HTTP Range header, forwarded by the gate as X-PP-Range:
+//      bytes=a-b (closed), bytes=-N (suffix), bytes=a- (open-ended — resolved
+//      against clen when the URI declares one, otherwise unknown).
+//   3. clen alone (no range anywhere): the whole resource is being fetched.
+// The client cannot understate this: the range determines what the upstream
+// returns, so it gets exactly the bytes it paid for.
+function requestedBytes(uri: string | undefined, rangeHeader: string | undefined): number | null {
+  let clen: number | null = null;
+  if (uri) {
+    const c = uri.match(/[?&]clen=(\d+)(?:&|$)/i);
+    if (c) clen = Number(c[1]);
+    const q = uri.match(/[?&]range=(\d+)-(\d+)(?:&|$)/i);
+    if (q) return Math.max(0, Number(q[2]) - Number(q[1]) + 1);
   }
-  return config.pointsPerRequest;
+  if (rangeHeader) {
+    const m = rangeHeader.match(/^bytes=(\d*)-(\d*)$/i);
+    if (m && (m[1] || m[2])) {
+      if (m[1] && m[2]) return Math.max(0, Number(m[2]) - Number(m[1]) + 1);
+      if (!m[1]) return Number(m[2]); // suffix: last N bytes
+      // open-ended a-: the rest of the resource, if we know its length
+      return clen !== null ? Math.max(0, clen - Number(m[1])) : null;
+    }
+    return clen; // multi-range/unparseable: fall back to clen or flat
+  }
+  return clen;
+}
+
+function costForUri(uri: string | undefined, rangeHeader?: string | undefined): number {
+  const base =
+    uri && (MEDIA_EXT_RE.test(uri) || MEDIA_PREFIX_RE.test(uri))
+      ? config.pointsPerMediaRequest
+      : config.pointsPerRequest;
+  if (config.pointsPerMiB <= 0) return base;
+  const bytes = requestedBytes(uri, rangeHeader);
+  if (bytes === null || bytes <= 0) return base;
+  return base + Math.ceil((bytes / 1048576) * config.pointsPerMiB);
 }
 
 // Constant-time password check (hash both sides so length isn't leaked).
@@ -244,13 +279,21 @@ async function main() {
       return;
     }
     const cookie = req.header('cookie');
+    // Per-request cost. Media (images + audio/video) meters cheaper than the
+    // default so image-heavy browsing doesn't drain a budget, while a direct
+    // media scrape still costs points. Derived from the original request URI
+    // (forwarded by the gate as X-Original-URI); everything else pays the
+    // default. When PP_POINTS_PER_MIB is set, requests that declare a byte
+    // size (Range header forwarded as X-PP-Range, or piped's range=/clen=
+    // query params) additionally pay per MiB requested.
+    const cost = costForUri(req.header('x-original-uri'), req.header('x-pp-range'));
     const dbg = (outcome: string) => {
       if (!config.debug) return;
       const sid = readCookie(cookie, config.sessionCookie);
       console.log(
         `[verify] ${outcome} sw=${req.header('x-pp-sw') ? 1 : 0} ` +
           `cookie=${sid ? sid.slice(0, 8) : '-'} hasAuth=${req.header('authorization') ? 1 : 0} ` +
-          `uri=${req.header('x-original-uri') ?? req.header('x-pp-uri') ?? '?'}`,
+          `cost=${cost} uri=${req.header('x-original-uri') ?? req.header('x-pp-uri') ?? '?'}`,
       );
     };
 
@@ -260,12 +303,6 @@ async function main() {
       res.set('X-PP-Bypass', '1').status(204).end();
       return;
     }
-    // Per-request cost. Media (images + audio/video) meters cheaper than the
-    // default so image-heavy browsing doesn't drain a budget, while a direct
-    // media scrape still costs points. Derived from the original request URI
-    // (forwarded by the gate as X-Original-URI); everything else pays the default.
-    const cost = costForUri(req.header('x-original-uri'));
-
     // 1. Ride an existing session.
     const sid = readCookie(cookie, config.sessionCookie);
     if (sid) {

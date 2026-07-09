@@ -153,14 +153,18 @@ server {
 
     # Internal auth subrequest. Forwards the token, the session cookie, and the
     # geo gate decision. Never proxies the body (it's a HEAD-like check).
+    # X-Original-URI drives the per-class cost (media vs default) and, together
+    # with X-PP-Range, the optional size-based cost (PP_POINTS_PER_MIB).
     location = /pp/verify {
         internal;
         proxy_pass PP/verify;
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
-        proxy_set_header Authorization $http_authorization;
-        proxy_set_header Cookie        $http_cookie;
-        proxy_set_header X-PP-Gate      $pp_gate;   # 1 => meter, 0 => allow
+        proxy_set_header Authorization  $http_authorization;
+        proxy_set_header Cookie         $http_cookie;
+        proxy_set_header X-PP-Gate      $pp_gate;        # 1 => meter, 0 => allow
+        proxy_set_header X-Original-URI $request_uri;
+        proxy_set_header X-PP-Range     $http_range;
     }
 
     # The activation page, issuance, key directory, service worker, etc.
@@ -355,6 +359,7 @@ All via `.env` (read once at startup — recreate the container to apply changes
 | `PP_POINTS_PER_TOKEN` | `1000000` | Points a token adds to a session. |
 | `PP_POINTS_PER_REQUEST` | `1000` | Points each gated request draws. `token/request` = requests per token. |
 | `PP_POINTS_PER_MEDIA_REQUEST` | `100` | Points a **media** request draws (images + audio/video, detected from the request URI). Cheaper so image-heavy browsing doesn't drain a budget, while a direct media scrape still costs points. |
+| `PP_POINTS_PER_MIB` | `0` (off) | Extra points per **MiB requested**, added on top of the class cost when a request declares its size — a `Range` header (forwarded as `X-PP-Range`) or googlevideo-style `range=`/`clen=` query params (piped). Makes bandwidth-heavy streaming pay proportionally; requests with no size hint stay flat. |
 | `PP_REFILL_BUFFER_REQUESTS` | `5000` | When the **token pool** falls to this many requests of reserve, new navigations are steered to re-activate (top up your code supply). |
 | `PP_SESSION_TOPUP_THRESHOLD` | `200000` | Points; when a live **session** drops below this the SW spends a token to top it up (keeps media funded). Size ≥ the request cost of the longest single video. |
 | `PP_TOPUP_THRESHOLD_OVERRIDES` | `{}` | JSON object of `hostname -> points` overriding the threshold per gated host (e.g. a large value for a video frontend). Needs `proxy_set_header Host $host;` in the `^~ /pp/` location (in the template above). |

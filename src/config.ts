@@ -95,6 +95,14 @@ export const config = {
   // Default 100 (10x cheaper than the 1_000 default). Replaces the old nginx
   // $pp_media_cost map / X-PP-Cost header plumbing.
   pointsPerMediaRequest: Number(process.env.PP_POINTS_PER_MEDIA_REQUEST ?? 100),
+  // Size-based cost component, in points per MiB REQUESTED. When > 0, a
+  // request that declares how many bytes it is asking for — a Range header
+  // (forwarded by the gate as X-PP-Range), or googlevideo-style range=/clen=
+  // query params (piped /videoplayback) — pays its class cost PLUS
+  // ceil(MiB * pointsPerMiB). Additive on purpose: a spoofed tiny Range can
+  // never make a request cheaper than its flat class cost, and requests with
+  // no size hint simply stay flat. 0 disables (default).
+  pointsPerMiB: Number(process.env.PP_POINTS_PER_MIB ?? 0),
   sessionCookie: process.env.PP_SESSION_COOKIE ?? 'pp_session',
 
   // Operator bypass. When PP_BYPASS_PASSWORD is set (non-empty), entering it on
