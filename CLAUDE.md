@@ -20,7 +20,7 @@ docker compose exec privacy-pass node dist/admin.js new-code --daily 50 --cap 50
 docker compose exec privacy-pass node dist/admin.js list-codes | revoke-code <code> | bypass-link
 ```
 
-There are no tests and no linter. Config is env-only (`.env`, read once at startup in `src/config.ts`) — changing it requires recreating the container. Set `PP_DEBUG=1` for per-request gate logging.
+There are no tests and no linter. Config is env-only (`.env`, read once at startup in `src/config.ts`) — changing it requires recreating the container. Set `PP_DEBUG=1` for per-request gate logging; the same flag (surfaced as `debug` in `/pp/config`) makes the SW log token/session stats to the browser console.
 
 ## Architecture
 

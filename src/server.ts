@@ -200,6 +200,8 @@ async function main() {
       requestsPerToken: Math.floor(config.pointsPerToken / config.pointsPerRequest),
       refillBufferRequests: config.refillBufferRequests,
       sessionTopUpThreshold: threshold,
+      // PP_DEBUG also flips the SW's console logging (token/session stats).
+      debug: config.debug,
     });
   });
 

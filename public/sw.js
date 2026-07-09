@@ -21,6 +21,15 @@ const STATIC_RE = /\.(?:css|js|mjs|map|svg|ico|woff2?|ttf|eot)(?:\?|$)/i;
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
+// Console stats, enabled by the server's PP_DEBUG (surfaced as `debug` in
+// /pp/config). Logs land in the page DevTools console (Chrome) or the worker
+// console (Firefox about:debugging). Never log token VALUES — they are bearer
+// credentials; counts and balances only.
+let DBG = false;
+function dbg(...args) {
+  if (DBG) console.log('[pp-sw]', ...args);
+}
+
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 1);
@@ -118,15 +127,23 @@ function renewSession() {
       // and try the next, bounded so a fully-spent pool can't spin forever.
       for (let tries = 0; tries < 16; tries++) {
         const token = await popToken(db);
-        if (!token) return false;
+        if (!token) {
+          dbg('renew: pool empty');
+          return false;
+        }
         const headers = new Headers();
         headers.set('X-PP-SW', '1');
         headers.set('Authorization', `PrivateToken token="${token}"`);
         // One minimal gated request the verifier meters — it mints the session
         // cookie. Body ignored.
         const r = await fetch(new Request('/', { headers, redirect: 'manual' })).catch(() => null);
-        broadcast({ type: 'pp-remaining', remaining: await countTokens(db) });
-        if (r && r.status === 401) continue; // token was spent/invalid — next
+        const remaining = await countTokens(db);
+        broadcast({ type: 'pp-remaining', remaining });
+        if (r && r.status === 401) {
+          dbg(`renew: token rejected (spent/stale), ${remaining} left, retrying`);
+          continue; // token was spent/invalid — next
+        }
+        dbg(`renew: new session opened, 1 token spent, ${remaining} left`);
         return true;
       }
       return false;
@@ -153,13 +170,27 @@ function topUp() {
       const db = await openDB();
       for (let tries = 0; tries < 16; tries++) {
         const token = await popToken(db);
-        if (!token) return false; // pool empty — nothing to top up with
+        if (!token) {
+          dbg('topup: pool empty');
+          return false; // pool empty — nothing to top up with
+        }
         const headers = new Headers();
         headers.set('X-PP-SW', '1');
         headers.set('Authorization', `PrivateToken token="${token}"`);
         const r = await fetch('/pp/refill', { method: 'POST', headers }).catch(() => null);
-        broadcast({ type: 'pp-remaining', remaining: await countTokens(db) });
-        if (r && r.status === 401) continue; // dead/spent token — try the next
+        const remaining = await countTokens(db);
+        broadcast({ type: 'pp-remaining', remaining });
+        if (r && r.status === 401) {
+          dbg(`topup: token rejected (spent/stale), ${remaining} left, retrying`);
+          continue; // dead/spent token — try the next
+        }
+        if (r && r.ok) {
+          const body = await r
+            .clone()
+            .json()
+            .catch(() => null);
+          dbg(`topup: session now ${body ? body.points : '?'} pts, 1 token spent, ${remaining} left`);
+        }
         return !!(r && r.ok);
       }
       return false;
@@ -180,6 +211,7 @@ async function maybeTopUp(res, event) {
   const cfg = await getConfig();
   const threshold = (cfg && cfg.sessionTopUpThreshold) || 200000;
   if (points >= threshold) return;
+  dbg(`session ${points} pts < threshold ${threshold}, topping up`);
   event.waitUntil(topUp());
 }
 
@@ -189,10 +221,26 @@ function getConfig() {
   if (!configPromise) {
     configPromise = fetch('/pp/config')
       .then((r) => r.json())
+      .then((cfg) => {
+        DBG = !!(cfg && cfg.debug);
+        return cfg;
+      })
       .catch(() => null);
   }
   return configPromise;
 }
+
+// Fetch the config early so DBG is set for this SW lifetime, and log a
+// startup line with the pool/session state (each browser wake of the SW is a
+// fresh lifetime, so this also marks restarts in the console).
+getConfig().then(async (cfg) => {
+  if (!cfg || !cfg.debug) return;
+  const tokens = await countTokens(await openDB()).catch(() => -1);
+  const pts = await fetch('/pp/points')
+    .then((r) => r.json())
+    .catch(() => null);
+  dbg(`started: ${tokens} tokens pooled, session=${pts ? pts.points : '?'} pts`);
+});
 
 // True when the token pool is within the refill buffer, so a new page should be
 // steered to re-activate (the buffer is left to finish already-started loads).
@@ -206,6 +254,7 @@ async function withinRefillBuffer() {
 }
 
 function exhausted(request, event) {
+  dbg(`EXHAUSTED: no tokens left (${request.mode === 'navigate' ? 'redirecting' : 'navigating owner'} to activate)`);
   broadcast({ type: 'pp-remaining', remaining: 0 });
   if (request.mode === 'navigate') {
     return Response.redirect('/pp/activate?exhausted=1', 302);
@@ -228,15 +277,18 @@ async function handle(event) {
   // 0. Refill buffer: steer NEW page loads to re-activate once low, but keep
   //    serving sub-resources so an in-flight load can finish from the buffer.
   if (request.mode === 'navigate' && (await withinRefillBuffer())) {
+    dbg('pool within refill buffer, steering navigation to /pp/activate?refill=1');
     return Response.redirect('/pp/activate?refill=1', 302);
   }
 
   // 1. Try riding the current session cookie.
   let res = await ride(request);
   if (res.status !== 401) {
+    dbg(`ride ${res.status} pts=${res.headers.get('X-PP-Points') ?? '-'} ${new URL(request.url).pathname}`);
     maybeTopUp(res, event); // keep the session funded for SW-invisible media
     return res;
   }
+  dbg(`401 (no/drained session) for ${new URL(request.url).pathname}, renewing`);
 
   // 2. No live session (first request, or it drained). Renew (coalesced across
   //    the concurrent herd — one token per session) and re-ride, at most twice.
