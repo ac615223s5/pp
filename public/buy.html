@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Buy an invite code</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 34rem;
+        margin: 4rem auto;
+        padding: 0 1rem;
+        line-height: 1.5;
+      }
+      h1 { font-size: 1.4rem; }
+      button {
+        font-size: 1rem;
+        padding: 0.55rem 1rem;
+        margin-top: 0.75rem;
+        cursor: pointer;
+        display: block;
+        width: 100%;
+        text-align: left;
+      }
+      button[disabled] { cursor: progress; opacity: 0.6; }
+      button b { float: right; }
+      #status { margin-top: 1rem; min-height: 1.5rem; }
+      .err { color: #b02a37; }
+      small { opacity: 0.7; }
+    </style>
+  </head>
+  <body>
+    <h1>Buy an invite code</h1>
+    <p>
+      Pick a package and pay with Bitcoin (on-chain or Lightning). When the
+      payment confirms you get a one-time <strong>invite code</strong> that
+      activates anonymous access tokens on any device. The payment and your
+      browsing are cryptographically unlinkable &mdash; the server can know a
+      code was bought, never what it is used for.
+    </p>
+    <div id="packages"><small>Loading packages&hellip;</small></div>
+    <div id="status"></div>
+    <p>
+      <small>
+        After payment you are sent to a <strong>claim page</strong> that reveals
+        your code. Save that claim link (we also keep a copy in this browser) —
+        it is the only way to retrieve the code. No email, no account.
+      </small>
+    </p>
+    <script>
+      'use strict';
+      const packagesEl = document.getElementById('packages');
+      const statusEl = document.getElementById('status');
+
+      function setStatus(msg, cls) {
+        statusEl.textContent = msg;
+        statusEl.className = cls || '';
+      }
+
+      async function buy(pkg, btn) {
+        btn.disabled = true;
+        setStatus('Creating invoice…');
+        try {
+          const r = await fetch('/pp/buy/checkout', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ packageId: pkg.id }),
+          });
+          if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status);
+          const { checkoutLink, claimUrl } = await r.json();
+          // Recovery copy in case the buyer never gets redirected back.
+          localStorage.setItem('pp_claim_url', claimUrl);
+          location.href = checkoutLink;
+        } catch (e) {
+          setStatus('Could not create the invoice (' + e.message + '). Try again shortly.', 'err');
+          btn.disabled = false;
+        }
+      }
+
+      fetch('/pp/buy/packages')
+        .then((r) => {
+          if (!r.ok) throw new Error();
+          return r.json();
+        })
+        .then(({ packages }) => {
+          packagesEl.textContent = '';
+          for (const pkg of packages) {
+            const btn = document.createElement('button');
+            const b = document.createElement('b');
+            b.textContent = pkg.amount + ' ' + pkg.currency;
+            btn.textContent = pkg.label + ' — ' + pkg.tokens.toLocaleString() + ' tokens ';
+            btn.appendChild(b);
+            btn.onclick = () => buy(pkg, btn);
+            packagesEl.appendChild(btn);
+          }
+        })
+        .catch(() => {
+          packagesEl.innerHTML = '<span class="err">Purchases are not available.</span>';
+        });
+
+      // A previous purchase was started but maybe never claimed — offer the way back.
+      const pending = localStorage.getItem('pp_claim_url');
+      if (pending) {
+        const p = document.createElement('p');
+        const a = document.createElement('a');
+        a.href = pending;
+        a.textContent = 'Resume your previous purchase';
+        p.appendChild(a);
+        document.body.insertBefore(p, statusEl);
+      }
+    </script>
+  </body>
+</html>

@@ -1,6 +1,8 @@
-// SQLite-backed state. Two concerns:
+// SQLite-backed state. Concerns:
 //   invite_codes  - one row per issued code; single-use claim is atomic.
 //   spent_tokens  - redeemed token hashes; double-spend guard is atomic.
+//   sessions      - points-metered session balances.
+//   purchases     - BTCPay invoice -> minted invite code; settle is atomic.
 //
 // better-sqlite3 is synchronous, which is exactly what we want for the
 // check-and-set primitives (no interleaving inside a single statement).
@@ -21,6 +23,18 @@ export interface CodeRow {
   // the moving low-water mark the accrual is measured from.
   daily: number;
   accrued_at: number | null;
+}
+
+export interface PurchaseRow {
+  invoice_id: string;
+  claim_token: string;
+  package_id: string;
+  tokens: number;
+  status: 'pending' | 'settled' | 'expired' | 'invalid';
+  code: string | null;
+  created_at: number;
+  settled_at: number | null;
+  claimed_at: number | null; // first reveal on the claim page; starts the retention clock
 }
 
 export class Store {
@@ -48,6 +62,17 @@ export class Store {
         id         TEXT PRIMARY KEY,
         points     INTEGER NOT NULL,
         created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS purchases (
+        invoice_id  TEXT PRIMARY KEY,
+        claim_token TEXT NOT NULL UNIQUE,
+        package_id  TEXT NOT NULL,
+        tokens      INTEGER NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'pending',
+        code        TEXT,
+        created_at  INTEGER NOT NULL,
+        settled_at  INTEGER,
+        claimed_at  INTEGER
       );
     `);
     // Migrate older databases that predate faucet codes.
@@ -172,6 +197,87 @@ export class Store {
         .prepare('INSERT OR IGNORE INTO spent_tokens (epoch, hash, spent_at) VALUES (?, ?, ?)')
         .run(epoch, hash, Date.now()).changes === 1
     );
+  }
+
+  // ---- BTCPay purchases ----------------------------------------------------
+
+  // Record a pending purchase. Called only AFTER the BTCPay invoice was
+  // created, so a BTCPay failure never leaves an orphan row.
+  createPurchase(invoiceId: string, claimToken: string, packageId: string, tokens: number): void {
+    this.db
+      .prepare(
+        'INSERT INTO purchases (invoice_id, claim_token, package_id, tokens, created_at) VALUES (?, ?, ?, ?, ?)',
+      )
+      .run(invoiceId, claimToken, packageId, tokens, Date.now());
+  }
+
+  getPurchase(invoiceId: string): PurchaseRow | undefined {
+    return this.db.prepare('SELECT * FROM purchases WHERE invoice_id = ?').get(invoiceId) as
+      | PurchaseRow
+      | undefined;
+  }
+
+  getPurchaseByClaim(claimToken: string): PurchaseRow | undefined {
+    return this.db.prepare('SELECT * FROM purchases WHERE claim_token = ?').get(claimToken) as
+      | PurchaseRow
+      | undefined;
+  }
+
+  listPurchases(): PurchaseRow[] {
+    return this.db
+      .prepare('SELECT * FROM purchases ORDER BY created_at DESC')
+      .all() as PurchaseRow[];
+  }
+
+  // Exactly-once fulfillment. The pending-only status guard is the idempotency
+  // lock: only the caller that flips pending->settled mints the code; webhook
+  // redeliveries and the webhook-vs-reconciliation race both lose here and
+  // return false. The transaction makes flip + code mint atomic, so a crash
+  // can never leave a settled purchase without its code.
+  settlePurchase(invoiceId: string, code: string): boolean {
+    return this.db.transaction(() => {
+      const flipped =
+        this.db
+          .prepare(
+            "UPDATE purchases SET status = 'settled', code = ?, settled_at = ? WHERE invoice_id = ? AND status = 'pending'",
+          )
+          .run(code, Date.now(), invoiceId).changes === 1;
+      if (!flipped) return false;
+      const row = this.getPurchase(invoiceId)!;
+      this.createCode(code, row.tokens); // single-use, daily = 0
+      return true;
+    })();
+  }
+
+  // Terminal failure (invoice expired or invalid). Same pending-only guard so
+  // a late settle can't be clobbered and vice versa.
+  failPurchase(invoiceId: string, status: 'expired' | 'invalid'): boolean {
+    return (
+      this.db
+        .prepare("UPDATE purchases SET status = ? WHERE invoice_id = ? AND status = 'pending'")
+        .run(status, invoiceId).changes === 1
+    );
+  }
+
+  // Stamp the first reveal of the code on the claim page (retention clock).
+  markPurchaseClaimed(claimToken: string): void {
+    this.db
+      .prepare('UPDATE purchases SET claimed_at = ? WHERE claim_token = ? AND claimed_at IS NULL')
+      .run(Date.now(), claimToken);
+  }
+
+  // Retention sweep: drop settled purchases the buyer has seen, and terminal
+  // failures, once past the retention window. Deleting the row severs the
+  // payment<->code link; the invite_codes row (no purchase data) survives.
+  sweepPurchases(retentionMs: number): number {
+    const cutoff = Date.now() - retentionMs;
+    return this.db
+      .prepare(
+        `DELETE FROM purchases
+         WHERE (status = 'settled' AND claimed_at IS NOT NULL AND claimed_at < ?)
+            OR (status IN ('expired', 'invalid') AND created_at < ?)`,
+      )
+      .run(cutoff, cutoff).changes;
   }
 
   // ---- points-metered sessions -------------------------------------------

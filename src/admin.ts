@@ -9,21 +9,9 @@
 // codes (--daily N) accrue N tokens per day up to a cap (--cap, default the
 // quota default) and dispense everything built up each time they're entered.
 
-import { randomBytes } from 'node:crypto';
 import { config } from './config.js';
 import { Store } from './store.js';
-
-// Unambiguous alphabet (no I/O/0/1).
-const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-function generateCode(): string {
-  const bytes = randomBytes(15);
-  const chars = Array.from(bytes, (b) => ALPHABET[b % ALPHABET.length]);
-  // group 5-5-5 for readability
-  return [chars.slice(0, 5), chars.slice(5, 10), chars.slice(10, 15)]
-    .map((g) => g.join(''))
-    .join('-');
-}
+import { generateCode } from './util.js';
 
 function argValue(name: string): string | undefined {
   const i = process.argv.indexOf(name);
@@ -81,6 +69,23 @@ function main() {
       }
       break;
     }
+    case 'list-purchases': {
+      // Operator recovery for BTCPay purchases: when a buyer loses the claim
+      // URL, match their BTCPay invoice id (or payment time) here and re-send
+      // the claim link — or the code directly once settled.
+      const rows = store.listPurchases();
+      if (rows.length === 0) {
+        console.log('(no purchases)');
+        break;
+      }
+      for (const r of rows) {
+        console.log(
+          `${r.invoice_id}  ${r.package_id}  ${r.status}  tokens=${r.tokens}  ` +
+            `claim: ${config.gatedOrigin}/pp/claim?ct=${r.claim_token}  code: ${r.code ?? '-'}`,
+        );
+      }
+      break;
+    }
     case 'revoke-code': {
       const code = process.argv[3];
       if (!code) {
@@ -105,7 +110,7 @@ function main() {
     }
     default:
       console.error(
-        'commands: new-code [--quota N | --daily N [--cap N]] [--count N] | list-codes | revoke-code <code> | bypass-link',
+        'commands: new-code [--quota N | --daily N [--cap N]] [--count N] | list-codes | list-purchases | revoke-code <code> | bypass-link',
       );
       process.exit(1);
   }

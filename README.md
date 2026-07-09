@@ -59,6 +59,8 @@ Browser SW ── ride session cookie (X-PP-SW) ──► nginx (gated server bl
                                              ├─ /pp/config     metering params
                                              ├─ /pp/points     session balance
                                              ├─ /pp/bypass     password → bypass cookie
+                                             ├─ /pp/buy*,/pp/claim*  sell codes via BTCPay
+                                             │                 (optional, env-gated)
                                              └─ /pp/activate   page + sw.js + activate.js
                                                               + status.html + pp-worker.js
 ```
@@ -78,11 +80,14 @@ Browser SW ── ride session cookie (X-PP-SW) ──► nginx (gated server bl
 src/config.ts   env config           src/pp.ts      issue/verify facade
 src/store.ts    SQLite: codes +       src/server.ts  HTTP routes (/verify, /pp/*)
                 spent-set + sessions   src/admin.ts   code + bypass-link CLI
+                + purchases
 src/keys.ts     keypair + bypass HMAC  src/bypass.ts  stateless bypass cookie (HMAC)
+src/btcpay.ts   BTCPay Greenfield client + webhook HMAC verify
 client/activate.ts  bundled → public/activate.js (activation + bypass password)
 client/pp-worker.ts bundled → public/pp-worker.js (parallel blind/unblind)
 public/activate.html  activation UI   public/sw.js   lazy-spend service worker
 public/status.html    balance + token export/import
+public/buy.html       package picker  public/claim.html  post-payment code reveal
 data/           mounted volume: pp.db (SQLite) + keys/ (RSA keypair)  ← secrets
 ```
 
@@ -136,6 +141,49 @@ With points-metered sessions, one token covers `pointsPerToken/pointsPerRequest`
 requests (~2000 here), so a 500-token code ≈ 1M requests. Activation
 blind-signs `quota` tokens in the browser (parallelised across Web Workers), so
 very large quotas still take time — size to expected usage.
+
+## Selling codes (BTCPay)
+
+Optionally, users can **buy** invite codes with crypto instead of asking for
+one: `/pp/buy` lists fixed packages, payment runs through a **BTCPay Server**
+you operate, and a settled invoice automatically mints a single-use code
+revealed on a claim page. Everything downstream (activation, blind signing,
+metering) is the ordinary invite-code flow.
+
+**Enable it** by setting all of `PP_BTCPAY_URL`, `PP_BTCPAY_API_KEY`,
+`PP_BTCPAY_STORE_ID`, `PP_BTCPAY_WEBHOOK_SECRET`, and `PP_BTCPAY_PACKAGES`
+(JSON array of `{id,label,tokens,amount,currency}`) in `.env` and recreating
+the container. All unset = feature off (routes 404, pages hidden). BTCPay-side
+setup:
+
+1. Create a Greenfield API key with only `btcpay.store.cancreateinvoice` and
+   `btcpay.store.canviewinvoices`, scoped to the one store.
+2. Create a store webhook pointing at `https://<gated-host>/pp/buy/webhook`
+   with events **InvoiceSettled, InvoiceExpired, InvoiceInvalid**, and put its
+   secret in `PP_BTCPAY_WEBHOOK_SECRET`. The path is reachable because nginx
+   proxies `^~ /pp/` ungated.
+
+**Flow:** buyer picks a package → `POST /pp/buy/checkout` creates the BTCPay
+invoice (its `redirectURL` points back to `/pp/claim?ct=<claim token>`) →
+buyer pays on the BTCPay checkout → the signed webhook flips the purchase
+`pending → settled` and mints the code **exactly once** (atomic pending-only
+guard, so redeliveries and races can't double-mint) → the claim page polls
+`/pp/claim/status` and reveals the code + an activate link. If a webhook is
+missed, the status poll reconciles directly against BTCPay. The claim token in
+the URL is the only credential — no account, no email; the buy page also
+stashes the claim URL in `localStorage` as a recovery copy.
+
+**Recovery:** `docker compose exec privacy-pass node dist/admin.js
+list-purchases` shows every purchase with its claim link and code — match a
+buyer by BTCPay invoice id or payment time. A stuck-but-paid invoice can be
+marked **Settled in the BTCPay UI**, which fires a genuine signed webhook and
+fulfills automatically. Refunds are manual in BTCPay.
+
+**Privacy:** the `purchases` row links a BTCPay invoice to the minted code —
+necessary for delivery, and swept `PP_PURCHASE_RETENTION_MS` (default 30 days)
+after the code is first revealed, severing that link. Blind issuance is
+untouched: the operator can know *who bought a code*, never *what it is used
+for*. Never log minted codes or store them alongside `/pp/issue` data.
 
 ## Bypass password (operator escape hatch)
 
@@ -316,6 +364,11 @@ service by copying that block onto its upstream — or follow [`INSTALL.md`](./I
 - **Bypass is not anonymous:** the operator bypass cookie is a stable per-device
   credential — it deliberately trades away unlinkability for the operator's own
   convenience. Keep the password secret.
+- **Purchases link payment→code, never code→browsing:** a BTCPay purchase row
+  ties an invoice (payment metadata on your BTCPay instance) to the minted
+  invite code until the retention sweep deletes it. Token issuance and
+  redemption stay blind — the purchase reveals nothing about what the code's
+  tokens are spent on.
 
 ## Key rotation (manual, for now)
 

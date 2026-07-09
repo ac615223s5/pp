@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Claim your invite code</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 34rem;
+        margin: 4rem auto;
+        padding: 0 1rem;
+        line-height: 1.5;
+      }
+      h1 { font-size: 1.4rem; }
+      #code {
+        font-family: ui-monospace, monospace;
+        font-size: 1.4rem;
+        letter-spacing: 0.08em;
+        padding: 0.75rem;
+        border: 1px solid currentColor;
+        border-radius: 4px;
+        text-align: center;
+        user-select: all;
+        margin: 1rem 0;
+      }
+      button {
+        font-size: 1rem;
+        padding: 0.55rem 1rem;
+        margin-top: 0.5rem;
+        cursor: pointer;
+      }
+      #status { margin-top: 1rem; min-height: 1.5rem; }
+      .ok { color: #157347; }
+      .err { color: #b02a37; }
+      small { opacity: 0.7; }
+      [hidden] { display: none; }
+    </style>
+  </head>
+  <body>
+    <h1>Claim your invite code</h1>
+    <div id="status">Checking payment status…</div>
+    <div id="result" hidden>
+      <p class="ok">Payment confirmed. This is your invite code:</p>
+      <div id="code"></div>
+      <button id="copy">Copy code</button>
+      <p><a id="activate" href="#">Activate on this device</a></p>
+      <p>
+        <small>
+          <strong>Save this code now.</strong> It works once, on any device, and
+          this page is not recoverable after cleanup. Codes stack — you can add
+          another later.
+        </small>
+      </p>
+    </div>
+    <div id="failed" hidden>
+      <p class="err" id="failmsg"></p>
+      <p>
+        If you did pay, contact the operator
+        <a href="https://matrix.to/#/!REDACTED:matrix.org?via=matrix.org"
+          >on Matrix</a
+        > with your payment time — the purchase can be fulfilled manually.
+      </p>
+    </div>
+    <script>
+      'use strict';
+      const statusEl = document.getElementById('status');
+      const resultEl = document.getElementById('result');
+      const failedEl = document.getElementById('failed');
+
+      // The claim token normally arrives in the URL; fall back to the copy the
+      // buy page stashed in localStorage in case the redirect was lost.
+      let ct = new URLSearchParams(location.search).get('ct');
+      if (!ct) {
+        const saved = localStorage.getItem('pp_claim_url');
+        if (saved) ct = new URLSearchParams(new URL(saved).search).get('ct');
+      }
+
+      function fail(msg) {
+        statusEl.textContent = '';
+        failedEl.hidden = false;
+        document.getElementById('failmsg').textContent = msg;
+      }
+
+      async function poll() {
+        let r;
+        try {
+          r = await fetch('/pp/claim/status?ct=' + encodeURIComponent(ct));
+        } catch {
+          setTimeout(poll, 4000); // network blip — keep polling
+          return;
+        }
+        if (r.status === 404) {
+          fail('Unknown or expired claim link.');
+          return;
+        }
+        const data = await r.json().catch(() => null);
+        if (!data) {
+          setTimeout(poll, 4000);
+          return;
+        }
+        if (data.status === 'pending') {
+          statusEl.textContent =
+            'Waiting for payment confirmation… (on-chain payments can take a block or two — leave this page open, or come back to this link later)';
+          setTimeout(poll, 4000);
+          return;
+        }
+        if (data.status === 'settled') {
+          statusEl.textContent = '';
+          resultEl.hidden = false;
+          document.getElementById('code').textContent = data.code;
+          document.getElementById('activate').href = data.activateUrl;
+          localStorage.removeItem('pp_claim_url'); // delivered — drop the backup
+          document.getElementById('copy').onclick = () =>
+            navigator.clipboard.writeText(data.code).catch(() => {});
+          return;
+        }
+        fail(
+          data.status === 'expired'
+            ? 'The invoice expired before payment completed.'
+            : 'The payment was marked invalid (e.g. underpaid).',
+        );
+      }
+
+      if (!ct) fail('Missing claim token — open the exact claim link you were given.');
+      else poll();
+    </script>
+  </body>
+</html>

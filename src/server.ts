@@ -10,6 +10,8 @@ import { Store } from './store.js';
 import { loadOrCreateIssuer } from './keys.js';
 import { PP } from './pp.js';
 import { mintBypassCookie, verifyBypassCookie } from './bypass.js';
+import { createInvoice, getInvoice, verifyWebhookSig } from './btcpay.js';
+import { generateCode, generateClaimToken } from './util.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, '..', 'public');
@@ -54,16 +56,70 @@ async function main() {
       `(${Math.floor(config.pointsPerToken / config.pointsPerRequest)} reqs/token)`,
   );
 
-  // Periodically sweep spent/old sessions so the table doesn't grow unbounded.
+  // Periodically sweep spent/old sessions so the table doesn't grow unbounded,
+  // and old purchases so the payment<->code link doesn't outlive its purpose.
   const sweep = () => {
     const n = store.cleanupSessions(config.pointsPerRequest, config.sessionMaxAgeMs);
     if (n) console.log(`[pp] swept ${n} exhausted/old sessions`);
+    if (config.btcpayEnabled && config.purchaseRetentionMs > 0) {
+      const p = store.sweepPurchases(config.purchaseRetentionMs);
+      if (p) console.log(`[pp] swept ${p} old purchases`);
+    }
   };
   sweep();
   setInterval(sweep, 3600_000).unref();
 
+  // Mint exactly one invite code per settled invoice. Idempotent via the
+  // store's pending-only guard: webhook redeliveries and the webhook-vs-
+  // reconciliation race are no-ops. Privacy: log the invoice id only — the
+  // code must never appear in logs.
+  const settleIfPending = (invoiceId: string): void => {
+    if (!store.getPurchase(invoiceId)) {
+      console.error(
+        `[buy] settled invoice ${invoiceId} has no purchase row — recover via BTCPay metadata.orderId`,
+      );
+      return;
+    }
+    if (store.settlePurchase(invoiceId, generateCode())) {
+      console.log(`[buy] invoice ${invoiceId} settled, code minted`);
+    }
+  };
+
   const app = express();
   app.disable('x-powered-by');
+
+  // BTCPay webhook. MUST be mounted before the global express.json middleware:
+  // the BTCPay-Sig HMAC is computed over the raw request bytes, so we need them
+  // unparsed (express.raw leaves req.body a Buffer; we JSON.parse only after
+  // the signature verifies).
+  app.post('/pp/buy/webhook', express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
+    if (!config.btcpayEnabled) {
+      res.status(404).json({ error: 'disabled' });
+      return;
+    }
+    if (!Buffer.isBuffer(req.body) || !verifyWebhookSig(req.body, req.header('btcpay-sig'))) {
+      console.error('[buy] webhook signature mismatch');
+      res.status(401).json({ error: 'bad_signature' });
+      return;
+    }
+    let ev: { type?: string; invoiceId?: string };
+    try {
+      ev = JSON.parse((req.body as Buffer).toString('utf8'));
+    } catch {
+      res.status(400).json({ error: 'bad_json' });
+      return;
+    }
+    if (ev.type === 'InvoiceSettled' && ev.invoiceId) {
+      settleIfPending(ev.invoiceId);
+    } else if ((ev.type === 'InvoiceExpired' || ev.type === 'InvoiceInvalid') && ev.invoiceId) {
+      store.failPurchase(ev.invoiceId, ev.type === 'InvoiceExpired' ? 'expired' : 'invalid');
+    }
+    // Always 200 once the signature checks out (including unknown invoice ids
+    // and ignored event types) so BTCPay stops redelivering; the unknown-
+    // invoice case is logged loudly above for operator recovery.
+    res.status(200).json({ ok: true });
+  });
+
   // Large batches: a 10k-token /pp/issue body is ~3.5MB; keep generous headroom.
   app.use(express.json({ limit: '64mb' }));
 
@@ -300,6 +356,107 @@ async function main() {
       .json({ ok: true, expiresInDays: Math.round(config.bypassMaxAgeMs / 86_400_000) });
   });
 
+  // ---- BTCPay purchases ----------------------------------------------------
+  // Buy an invite code with crypto. All routes 404 when the feature is off
+  // (PP_BTCPAY_* unset), same idiom as /pp/bypass above.
+
+  const buyDisabled = (res: express.Response): boolean => {
+    if (config.btcpayEnabled) return false;
+    res.status(404).json({ error: 'disabled' });
+    return true;
+  };
+
+  // Package list for the buy page. Live config — never cache.
+  app.get('/pp/buy/packages', (_req, res) => {
+    if (buyDisabled(res)) return;
+    res.set('Cache-Control', 'no-store').json({ packages: config.btcpayPackages });
+  });
+
+  // Trivial global rate limit on invoice creation: the endpoint is
+  // unauthenticated and each call creates a real BTCPay invoice. Enough to
+  // stop drive-by invoice spam without a dependency; nginx-level limits can
+  // be layered on top.
+  let checkoutsThisMinute = 0;
+  setInterval(() => (checkoutsThisMinute = 0), 60_000).unref();
+
+  // Create an invoice for a package and hand back the BTCPay checkout link +
+  // the claim URL. The purchase row is inserted only AFTER BTCPay succeeds, so
+  // a BTCPay failure leaves no orphan row (the reverse orphan — invoice
+  // without row on a crash between the two — is caught by the webhook's
+  // unknown-invoice log and recovered via metadata.orderId).
+  app.post('/pp/buy/checkout', async (req, res) => {
+    if (buyDisabled(res)) return;
+    if (++checkoutsThisMinute > 30) {
+      res.status(429).json({ error: 'rate_limited' });
+      return;
+    }
+    const pkg = config.btcpayPackages.find((p) => p.id === req.body?.packageId);
+    if (!pkg) {
+      res.status(400).json({ error: 'unknown_package' });
+      return;
+    }
+    const claimToken = generateClaimToken();
+    let invoice;
+    try {
+      invoice = await createInvoice(pkg, claimToken);
+    } catch (err) {
+      console.error('[buy] invoice create failed:', (err as Error).message);
+      res.status(502).json({ error: 'btcpay_unreachable' });
+      return;
+    }
+    store.createPurchase(invoice.id, claimToken, pkg.id, pkg.tokens);
+    res.json({
+      checkoutLink: invoice.checkoutLink,
+      claimUrl: `${config.gatedOrigin}/pp/claim?ct=${claimToken}`,
+    });
+  });
+
+  // Claim status: the claim page polls this until the purchase settles. While
+  // still pending, reconcile directly against BTCPay — the fallback for a
+  // missed webhook (BTCPay unreachable => stay pending; the poller retries).
+  app.get('/pp/claim/status', async (req, res) => {
+    if (buyDisabled(res)) return;
+    res.set('Cache-Control', 'no-store');
+    const ct = String(req.query.ct ?? '');
+    let row = ct ? store.getPurchaseByClaim(ct) : undefined;
+    if (!row) {
+      res.status(404).json({ error: 'unknown' });
+      return;
+    }
+    if (row.status === 'pending') {
+      try {
+        const invoice = await getInvoice(row.invoice_id);
+        if (invoice.status === 'Settled') settleIfPending(row.invoice_id);
+        else if (invoice.status === 'Expired') store.failPurchase(row.invoice_id, 'expired');
+        else if (invoice.status === 'Invalid') store.failPurchase(row.invoice_id, 'invalid');
+        row = store.getPurchaseByClaim(ct)!;
+      } catch {
+        /* BTCPay unreachable — report pending, poller retries */
+      }
+    }
+    if (row.status !== 'settled') {
+      res.json({ status: row.status });
+      return;
+    }
+    store.markPurchaseClaimed(ct); // retention clock starts at first reveal
+    res.json({
+      status: 'settled',
+      code: row.code,
+      tokens: row.tokens,
+      activateUrl: `${config.gatedOrigin}/pp/activate?code=${row.code}`,
+    });
+  });
+
+  app.get('/pp/buy', (_req, res) => {
+    if (buyDisabled(res)) return;
+    res.sendFile(join(PUBLIC_DIR, 'buy.html'));
+  });
+
+  app.get('/pp/claim', (_req, res) => {
+    if (buyDisabled(res)) return;
+    res.sendFile(join(PUBLIC_DIR, 'claim.html'));
+  });
+
   // Activation / landing page. Same handler for cold visits and ?exhausted=1.
   app.get('/pp/activate', (_req, res) => {
     res.sendFile(join(PUBLIC_DIR, 'activate.html'));
@@ -311,6 +468,16 @@ async function main() {
     res.set('Service-Worker-Allowed', '/');
     res.type('application/javascript');
     res.sendFile(join(PUBLIC_DIR, 'sw.js'));
+  });
+
+  // Purchases disabled: hide the raw pages the static handler would otherwise
+  // still expose at /pp/buy.html and /pp/claim.html.
+  app.use('/pp', (req, res, next) => {
+    if (!config.btcpayEnabled && (req.path === '/buy.html' || req.path === '/claim.html')) {
+      res.status(404).end();
+      return;
+    }
+    next();
   });
 
   // activate.js and any other bundled assets.

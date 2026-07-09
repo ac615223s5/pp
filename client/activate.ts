@@ -379,5 +379,16 @@ async function init() {
   } else if (params.get('refill') === '1') {
     setStatus('Running low on requests — activate a new code to top up (they stack).', 'err');
   }
+
+  // Purchases are env-gated server-side; unhide the "buy one" link only when
+  // the endpoint answers (404 = feature off, page stays inert).
+  const buyLine = document.getElementById('buyline');
+  if (buyLine) {
+    fetch('/pp/buy/packages')
+      .then((r) => {
+        if (r.ok) buyLine.hidden = false;
+      })
+      .catch(() => {});
+  }
 }
 init();

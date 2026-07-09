@@ -1,5 +1,49 @@
 // Centralised runtime configuration, read once from the environment.
 
+// A purchasable token package (BTCPay checkout). `amount` stays a string —
+// the Greenfield API takes decimal strings, and we never do math on it.
+export interface Package {
+  id: string;
+  label: string;
+  tokens: number;
+  amount: string;
+  currency: string;
+}
+
+// Parse PP_BTCPAY_PACKAGES. Throws on malformed config so a bad deploy fails
+// loudly at startup instead of silently selling nothing.
+function parsePackages(json: string): Package[] {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(json);
+  } catch {
+    throw new Error('PP_BTCPAY_PACKAGES is not valid JSON');
+  }
+  if (!Array.isArray(raw)) throw new Error('PP_BTCPAY_PACKAGES must be a JSON array');
+  const seen = new Set<string>();
+  return raw.map((p, i) => {
+    const pkg = p as Partial<Package>;
+    if (typeof pkg.id !== 'string' || !pkg.id || seen.has(pkg.id))
+      throw new Error(`PP_BTCPAY_PACKAGES[${i}]: missing or duplicate id`);
+    seen.add(pkg.id);
+    if (typeof pkg.label !== 'string' || !pkg.label)
+      throw new Error(`PP_BTCPAY_PACKAGES[${i}]: missing label`);
+    if (!Number.isInteger(pkg.tokens) || (pkg.tokens as number) < 1)
+      throw new Error(`PP_BTCPAY_PACKAGES[${i}]: tokens must be a positive integer`);
+    if (typeof pkg.amount !== 'string' || !/^\d+(\.\d+)?$/.test(pkg.amount))
+      throw new Error(`PP_BTCPAY_PACKAGES[${i}]: amount must be a decimal string`);
+    if (typeof pkg.currency !== 'string' || !/^[A-Z]{3,5}$/.test(pkg.currency))
+      throw new Error(`PP_BTCPAY_PACKAGES[${i}]: currency must be 3-5 uppercase letters`);
+    return { id: pkg.id, label: pkg.label, tokens: pkg.tokens as number, amount: pkg.amount, currency: pkg.currency };
+  });
+}
+
+const btcpayUrl = (process.env.PP_BTCPAY_URL ?? '').replace(/\/+$/, '');
+const btcpayApiKey = process.env.PP_BTCPAY_API_KEY ?? '';
+const btcpayStoreId = process.env.PP_BTCPAY_STORE_ID ?? '';
+const btcpayWebhookSecret = process.env.PP_BTCPAY_WEBHOOK_SECRET ?? '';
+const btcpayPackages = parsePackages(process.env.PP_BTCPAY_PACKAGES ?? '[]');
+
 export const config = {
   port: Number(process.env.PP_PORT ?? 8787),
   issuerName: process.env.PP_ISSUER_NAME ?? 'quetre.example.com',
@@ -52,4 +96,20 @@ export const config = {
   // sessions with fewer than one request's worth of points, or older than this,
   // are swept periodically.
   sessionMaxAgeMs: Number(process.env.PP_SESSION_MAX_AGE_MS ?? 30 * 24 * 3600 * 1000),
+
+  // BTCPay purchases: sell invite codes for crypto via an operator-run BTCPay
+  // Server (Greenfield API). All four credentials AND at least one package must
+  // be set to enable the feature; otherwise every /pp/buy* and /pp/claim* route
+  // 404s and the pages are hidden — same "empty = disabled" idiom as the
+  // bypass password above.
+  btcpayUrl,
+  btcpayApiKey,
+  btcpayStoreId,
+  btcpayWebhookSecret,
+  btcpayPackages,
+  btcpayEnabled: !!(btcpayUrl && btcpayApiKey && btcpayStoreId && btcpayWebhookSecret && btcpayPackages.length),
+  // Purchase rows link a BTCPay invoice to the minted code (needed for
+  // delivery). They are deleted this long after the code is first revealed
+  // (or after a terminal failure), severing that link. 0 = never sweep.
+  purchaseRetentionMs: Number(process.env.PP_PURCHASE_RETENTION_MS ?? 30 * 24 * 3600 * 1000),
 } as const;

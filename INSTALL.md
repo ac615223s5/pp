@@ -291,6 +291,30 @@ docker compose exec privacy-pass node dist/admin.js revoke-code ABCDE-FGHJK-LMNP
 Share the **link** — it prefills the code but still requires the user to click
 Activate (so link prefetchers can't burn it).
 
+### Optional — sell codes via BTCPay
+
+If you run a [BTCPay Server](https://btcpayserver.org/), users can buy codes
+themselves at `/pp/buy` instead of asking you. Set in `.env` (all required to
+enable; empty = feature off, routes 404):
+
+```ini
+PP_BTCPAY_URL=https://btcpay.example.com
+PP_BTCPAY_API_KEY=...        # Greenfield key: btcpay.store.cancreateinvoice + canviewinvoices
+PP_BTCPAY_STORE_ID=...
+PP_BTCPAY_WEBHOOK_SECRET=... # store webhook -> https://example.com/pp/buy/webhook
+PP_BTCPAY_PACKAGES=[{"id":"s","label":"Starter","tokens":500,"amount":"3.00","currency":"EUR"}]
+```
+
+In BTCPay, create a store webhook pointing at `https://<host>/pp/buy/webhook`
+with events **InvoiceSettled, InvoiceExpired, InvoiceInvalid** (the `^~ /pp/`
+location already passes it through ungated). A settled invoice mints a
+single-use invite code exactly once (webhook redeliveries are no-ops) and the
+buyer claims it at `/pp/claim?ct=<token>` — the claim URL is the only
+credential, so tell buyers to save it. Recovery: `node dist/admin.js
+list-purchases`, or mark the invoice Settled in the BTCPay UI to re-fire
+fulfillment. Purchase rows (the payment↔code link) are swept
+`PP_PURCHASE_RETENTION_MS` after the code is revealed.
+
 ---
 
 ## Step 5 — Activate in a browser
@@ -333,6 +357,9 @@ All via `.env` (read once at startup — recreate the container to apply changes
 | `PP_KEY_DIR` | `/data/keys` | RSA keypair dir. **Persist + back up.** |
 | `PP_SESSION_MAX_AGE_MS` | 30 days | Session cookie lifetime + sweep age. |
 | `PP_BYPASS_MAX_AGE_MS` | 365 days | Operator bypass cookie lifetime. |
+| `PP_BTCPAY_URL` / `_API_KEY` / `_STORE_ID` / `_WEBHOOK_SECRET` | `` (empty) | BTCPay Server integration for selling codes. **All four** (plus packages) must be set to enable `/pp/buy`; empty = off. |
+| `PP_BTCPAY_PACKAGES` | `[]` | JSON array of purchasable packages: `{id,label,tokens,amount,currency}` (amount is a decimal string). |
+| `PP_PURCHASE_RETENTION_MS` | 30 days | Purchase rows (payment↔code link) are deleted this long after the code is revealed. 0 = never. |
 
 **Tuning intuition:** `pointsPerToken / pointsPerRequest` = requests per token.
 Bigger tokens = fewer activations/renewals but coarser accounting. The top-up
