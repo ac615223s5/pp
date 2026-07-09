@@ -69,8 +69,8 @@ const btcpayPackages = parsePackages(process.env.PP_BTCPAY_PACKAGES ?? '[]');
 
 export const config = {
   port: Number(process.env.PP_PORT ?? 8787),
-  issuerName: process.env.PP_ISSUER_NAME ?? 'quetre.example.com',
-  gatedOrigin: process.env.PP_GATED_ORIGIN ?? 'https://quetre.example.com',
+  issuerName: process.env.PP_ISSUER_NAME ?? 'subdomain.example.com',
+  gatedOrigin: process.env.PP_GATED_ORIGIN ?? 'https://subdomain.example.com',
   quotaDefault: Number(process.env.PP_QUOTA_DEFAULT ?? 500),
   // Default draw size: /pp/issue-info tells clients to generate
   // min(available, tokensPerDraw) tokens per activation, so a code is drawn

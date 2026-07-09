@@ -112,7 +112,7 @@ docker exec nginx nginx -t && docker exec nginx nginx -s reload
 ```sh
 # Balance: a shared pool of N tokens, drawn in capped batches until empty.
 docker compose exec privacy-pass node dist/admin.js new-code --quota 500
-#   MW4TM-Z3GBR-NYTSX  (quota 500)  https://quetre.example.com/pp/activate?code=MW4TM-Z3GBR-NYTSX
+#   MW4TM-Z3GBR-NYTSX  (quota 500)  https://subdomain.example.com/pp/activate?code=MW4TM-Z3GBR-NYTSX
 docker compose exec privacy-pass node dist/admin.js new-code --quota 500 --count 10   # ten at once
 
 # Faucet: reusable code that accrues 50 tokens/day up to a 500 cap; each entry
@@ -242,7 +242,7 @@ signed, HttpOnly `pp_bypass` cookie; while it's present the verifier returns
 
 ```sh
 docker compose exec privacy-pass node dist/admin.js bypass-link
-#   link: https://quetre.example.com/pp/activate?pw=<password>
+#   link: https://subdomain.example.com/pp/activate?pw=<password>
 ```
 
 Send yourself that link (or visit `/pp/activate`, expand **"Have a bypass

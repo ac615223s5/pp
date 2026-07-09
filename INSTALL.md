@@ -357,7 +357,7 @@ All via `.env` (read once at startup — recreate the container to apply changes
 | Variable | Default | Meaning |
 |---|---|---|
 | `PP_PORT` | `8787` | Port the service listens on inside the container. |
-| `PP_ISSUER_NAME` | `quetre…` | Cosmetic issuer label. |
+| `PP_ISSUER_NAME` | `subdomain…` | Cosmetic issuer label. |
 | `PP_GATED_ORIGIN` | `https://…` | Base URL used only to print activation links in the admin CLI. |
 | `PP_QUOTA_DEFAULT` | `500` | Default `--quota` (and faucet `--cap`) for `new-code`. |
 | `PP_TOKENS_PER_DRAW` | `50` | Tokens per activation draw (client default via `/pp/issue-info`, not a server cap). Keep it in the tens — tiny draws let timing link redemptions to codes. |
