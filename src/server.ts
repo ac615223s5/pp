@@ -294,6 +294,35 @@ async function main() {
     res.json({ signatures });
   });
 
+  // Consolidate codes: move the remaining balance of one balance code onto
+  // another, so a user keeps a single saved code (e.g. fold a newly bought
+  // code into the one in their password manager). Both codes are bearer
+  // secrets the caller must already know. Privacy: nothing linking the two
+  // codes is stored or logged.
+  app.post('/pp/merge', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const norm = (v: unknown) => (typeof v === 'string' ? v.trim().toUpperCase() : '');
+    const from = norm(req.body?.from);
+    const into = norm(req.body?.into);
+    if (!from || !into) {
+      res.status(400).json({ error: 'bad_request' });
+      return;
+    }
+    const result = store.mergeCodes(from, into);
+    if (!result.ok) {
+      const map = {
+        unknown_from: 404,
+        unknown_into: 404,
+        not_mergeable: 400,
+        empty: 409,
+        conflict: 409,
+      } as const;
+      res.status(map[result.error]).json({ error: result.error });
+      return;
+    }
+    res.json({ merged: result.merged, remaining: result.remaining });
+  });
+
   // Internal auth_request target. nginx rewrites /pp/verify -> /verify and
   // forwards Authorization, Cookie, and X-PP-Gate (the geo decision).
   // The IP gate lives here: only X-PP-Gate=1 clients are metered; everyone else

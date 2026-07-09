@@ -209,6 +209,58 @@ export class Store {
     );
   }
 
+  // Merge the remaining balance of one balance code into another: the source
+  // drains to fully-drawn and the destination's quota grows by the transferred
+  // amount, reviving it if it was exhausted (so a long-saved code can be topped
+  // up with a newly bought one). Balance codes only — faucets keep their
+  // accrual semantics. Atomic: the drain is guarded against a concurrent draw
+  // on the source, and a failed credit rolls the drain back. No link between
+  // the two codes is persisted; callers must not log them together.
+  mergeCodes(
+    from: string,
+    into: string,
+  ):
+    | { ok: true; merged: number; remaining: number }
+    | { ok: false; error: 'unknown_from' | 'unknown_into' | 'not_mergeable' | 'empty' | 'conflict' } {
+    if (from === into) return { ok: false, error: 'not_mergeable' };
+    try {
+      return this.db.transaction(() => {
+        const src = this.getCode(from);
+        if (!src) return { ok: false, error: 'unknown_from' } as const;
+        const dst = this.getCode(into);
+        if (!dst) return { ok: false, error: 'unknown_into' } as const;
+        if (src.daily > 0 || dst.daily > 0) return { ok: false, error: 'not_mergeable' } as const;
+        const n = src.quota - src.drawn;
+        if (n < 1) return { ok: false, error: 'empty' } as const;
+        // Drain the source, but only if its balance is still exactly what we
+        // just read — a draw racing in from another process loses cleanly.
+        const drained =
+          this.db
+            .prepare(
+              `UPDATE invite_codes SET drawn = quota, used = 1, used_at = ?
+               WHERE code = ? AND daily <= 0 AND quota - drawn = ?`,
+            )
+            .run(Date.now(), from, n).changes === 1;
+        if (!drained) return { ok: false, error: 'conflict' } as const;
+        // Credit the destination, clearing the exhausted stamp if this revives
+        // it. A vanished destination (concurrent revoke) throws to roll back
+        // the drain.
+        const credited =
+          this.db
+            .prepare(
+              `UPDATE invite_codes SET quota = quota + ?, used = 0, used_at = NULL
+               WHERE code = ? AND daily <= 0`,
+            )
+            .run(n, into).changes === 1;
+        if (!credited) throw new Error('merge credit failed');
+        const after = this.getCode(into)!;
+        return { ok: true, merged: n, remaining: after.quota - after.drawn } as const;
+      })();
+    } catch {
+      return { ok: false, error: 'conflict' };
+    }
+  }
+
   // ---- spent tokens -------------------------------------------------------
 
   // Atomic double-spend check: true iff this hash was newly recorded.

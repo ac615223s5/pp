@@ -80,6 +80,22 @@
       <!-- unhidden by activate.js only when the server has purchases enabled -->
       <span id="buyline" hidden>Or <a href="/pp/buy">buy one with Bitcoin</a>.</span>
     </p>
+    <details id="merge">
+      <summary>Have more than one code?</summary>
+      <p>
+        <small
+          >Merge another code's remaining tokens into the code saved on this
+          device, so you only keep one. The other code stops working
+          immediately; your saved code grows by its balance (and comes back to
+          life if it was empty).</small
+        >
+      </p>
+      <form id="merge-form">
+        <label for="mergecode"><strong>Other code</strong></label>
+        <input id="mergecode" type="text" autocomplete="off" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX" />
+        <button id="do-merge" type="submit">Merge into my code</button>
+      </form>
+    </details>
     <details id="bypass">
       <summary>Have a bypass password?</summary>
       <p>

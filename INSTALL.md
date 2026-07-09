@@ -284,7 +284,9 @@ Two kinds of code, both drawn in `PP_TOKENS_PER_DRAW`-capped batches (default
 until empty — the activation page remembers the code and silently draws more
 when a device runs low. **Faucet** codes (`--daily`) accrue tokens per day up
 to a cap and dispense capped draws of what has built up — a reusable standing
-grant.
+grant. Users can consolidate balance codes themselves ("Have more than one
+code?" on `/pp/activate`), folding one code's remaining tokens into another;
+the operator equivalent is `merge-code <from> <into>`.
 
 ```bash
 docker compose exec privacy-pass node dist/admin.js new-code --quota 500

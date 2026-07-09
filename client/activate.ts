@@ -339,6 +339,62 @@ document.getElementById('pw-form')!.addEventListener('submit', (e) => {
   unlock();
 });
 
+// Merge another code's remaining balance into this device's saved code
+// (POST /pp/merge) so the user keeps a single code. Destination: the code that
+// last drew here, falling back to whatever is typed in the main field.
+const mergeInput = document.getElementById('mergecode') as HTMLInputElement | null;
+const mergeBtn = document.getElementById('do-merge') as HTMLButtonElement | null;
+document.getElementById('merge-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!mergeInput || !mergeBtn) return;
+  const from = mergeInput.value.trim().toUpperCase();
+  const into = (localStorage.getItem(CODE_KEY) ?? codeInput.value.trim()).toUpperCase();
+  if (!from) {
+    setStatus('Enter the code you want to merge.', 'err');
+    return;
+  }
+  if (!into) {
+    setStatus('No saved code on this device yet — activate one first, then merge into it.', 'err');
+    return;
+  }
+  if (from === into) {
+    setStatus('That is already your saved code — enter the other one.', 'err');
+    return;
+  }
+  mergeBtn.disabled = true;
+  setStatus('Merging…');
+  try {
+    const resp = await fetch('/pp/merge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ from, into }),
+    });
+    const body = (await resp.json().catch(() => ({}))) as {
+      merged?: number;
+      remaining?: number;
+      error?: string;
+    };
+    if (resp.ok) {
+      mergeInput.value = '';
+      setStatus(`Merged ${body.merged} tokens — your code now holds ${body.remaining}.`, 'ok');
+    } else if (body.error === 'unknown_from') {
+      setStatus('That code is unknown (or already merged/revoked).', 'err');
+    } else if (body.error === 'unknown_into') {
+      setStatus('Your saved code no longer exists on the server — activate a fresh code first.', 'err');
+    } else if (body.error === 'not_mergeable') {
+      setStatus('Faucet codes cannot be merged — only ordinary balance codes.', 'err');
+    } else if (body.error === 'empty') {
+      setStatus('That code has no tokens left to merge.', 'err');
+    } else {
+      setStatus('Merge failed — please try again.', 'err');
+    }
+  } catch (err) {
+    setStatus(`Something went wrong: ${(err as Error).message}`, 'err');
+  } finally {
+    mergeBtn.disabled = false;
+  }
+});
+
 // The code input is type=password purely for manager heuristics; codes aren't
 // shoulder-surfing secrets on the same level, so let the user unmask to check
 // for typos.

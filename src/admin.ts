@@ -90,6 +90,23 @@ function main() {
       }
       break;
     }
+    case 'merge-code': {
+      // Fold one balance code's remaining tokens into another (same operation
+      // users can do on the activation page via /pp/merge).
+      const from = process.argv[3];
+      const into = process.argv[4];
+      if (!from || !into) {
+        console.error('usage: merge-code <from> <into>');
+        process.exit(1);
+      }
+      const result = store.mergeCodes(from, into);
+      console.log(
+        result.ok
+          ? `merged ${result.merged} tokens into ${into} (now ${result.remaining} remaining); ${from} is dead`
+          : `not merged (${result.error})`,
+      );
+      break;
+    }
     case 'revoke-code': {
       const code = process.argv[3];
       if (!code) {
@@ -114,7 +131,7 @@ function main() {
     }
     default:
       console.error(
-        'commands: new-code [--quota N | --daily N [--cap N]] [--count N] | list-codes | list-purchases | revoke-code <code> | bypass-link',
+        'commands: new-code [--quota N | --daily N [--cap N]] [--count N] | list-codes | list-purchases | merge-code <from> <into> | revoke-code <code> | bypass-link',
       );
       process.exit(1);
   }

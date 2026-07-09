@@ -139,6 +139,15 @@ would let the operator link redemptions back to codes purely by timing —
 don't set `PP_TOKENS_PER_DRAW` low. The cap is a client default only;
 `/pp/issue` accepts any batch up to the code's remaining balance.
 
+**Merging codes:** a user with several codes (say, an old one plus a newly
+bought package) can fold one into another under "Have more than one code?" on
+`/pp/activate` — the other code's remaining tokens move onto the device's
+saved code, the source dies immediately, and an exhausted destination comes
+back to life (so the password-manager entry stays valid forever). Operator
+equivalent: `node dist/admin.js merge-code <from> <into>`. Balance codes only
+(faucets keep their accrual); the server stores and logs nothing linking the
+two codes.
+
 A **faucet code** starts full (first entry yields a first draw immediately),
 then refills at `--daily` per day up to `--cap`. Re-entering it — or the silent
 top-up doing so — dispenses a capped draw of what has accumulated since last
