@@ -358,7 +358,8 @@ All via `.env` (read once at startup — recreate the container to apply changes
 | `PP_ACCRUAL_PERIOD_MS` | `86400000` | Accrual period for faucet (`--daily`) codes. |
 | `PP_POINTS_PER_TOKEN` | `1000000` | Points a token adds to a session. |
 | `PP_POINTS_PER_REQUEST` | `1000` | Points each gated request draws. `token/request` = requests per token. |
-| `PP_POINTS_PER_MEDIA_REQUEST` | `100` | Points a **media** request draws (images + audio/video, detected from the request URI). Cheaper so image-heavy browsing doesn't drain a budget, while a direct media scrape still costs points. |
+| `PP_POINTS_PER_MEDIA_REQUEST` | `100` | Points an **image** request draws (detected from the request URI). Cheaper so image-heavy browsing doesn't drain a budget, while a direct image scrape still costs points. |
+| `PP_POINTS_PER_STREAM_REQUEST` | `25` | Points an **audio/video** request draws (HLS/DASH segments + manifests, mp4/webm, `/videoplayback`, `/video/`). A low flat floor — pair with `PP_POINTS_PER_MIB` so streaming pays by bandwidth. |
 | `PP_POINTS_PER_MIB` | `0` (off) | Extra points per **MiB requested**, added on top of the class cost when a request declares its size — a `Range` header (forwarded as `X-PP-Range`) or googlevideo-style `range=`/`clen=` query params (piped). Makes bandwidth-heavy streaming pay proportionally; requests with no size hint stay flat. |
 | `PP_REFILL_BUFFER_REQUESTS` | `5000` | When the **token pool** falls to this many requests of reserve, new navigations are steered to re-activate (top up your code supply). |
 | `PP_SESSION_TOPUP_THRESHOLD` | `200000` | Points; when a live **session** drops below this the SW spends a token to top it up (keeps media funded). Size ≥ the request cost of the longest single video. |

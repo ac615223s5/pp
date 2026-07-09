@@ -95,6 +95,12 @@ export const config = {
   // Default 100 (10x cheaper than the 1_000 default). Replaces the old nginx
   // $pp_media_cost map / X-PP-Cost header plumbing.
   pointsPerMediaRequest: Number(process.env.PP_POINTS_PER_MEDIA_REQUEST ?? 100),
+  // Cheapest class: audio/video/streaming (HLS/DASH segments + manifests,
+  // progressive mp4/webm, piped's /videoplayback). A low flat base — the real
+  // pricing signal for streaming is the size-based PP_POINTS_PER_MIB component
+  // these requests carry (Range headers / range= params), so the base is just
+  // a per-request floor. Images deliberately stay in the pricier media class.
+  pointsPerStreamRequest: Number(process.env.PP_POINTS_PER_STREAM_REQUEST ?? 25),
   // Size-based cost component, in points per MiB REQUESTED. When > 0, a
   // request that declares how many bytes it is asking for — a Range header
   // (forwarded by the gate as X-PP-Range), or googlevideo-style range=/clen=

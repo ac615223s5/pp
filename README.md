@@ -268,10 +268,15 @@ Because the gate meters **per request**, what to exempt matters. Three classes:
   regex `css|js|mjs|map|svg|ico|woff2?|ttf|eot`, plus `^~ /static/` for a
   service's own bundle, e.g. rimgo). The SW's `STATIC_RE` skips them too. Bots
   don't scrape these; metering them just wastes points.
-- **Images** (`<img>`): **gated**. They flow through the SW like any GET, so they
+- **Images** (`<img>`): **gated**, at the media class cost
+  (`PP_POINTS_PER_MEDIA_REQUEST`). They flow through the SW like any GET, so they
   meter per-request (ride/spend). This is what stops scrapers pulling image links
   directly through us.
-- **Audio / video** (`<video>`/`<audio>`): **gated, but special.** Media-element
+- **Audio / video** (`<video>`/`<audio>`): **gated, but special** — and the
+  cheapest flat class (`PP_POINTS_PER_STREAM_REQUEST`: HLS/DASH segments and
+  manifests, progressive mp4/webm, piped's `/videoplayback`, nitter's
+  `/video/`). The low base is a floor; with `PP_POINTS_PER_MIB` set, streaming
+  pays primarily by the bytes it requests. Media-element
   range requests **bypass the service worker** (verified: they arrive `sw=0`, no
   token), so they can't trigger the SW's reactive renewal. They ride a session the
   SW keeps **funded ahead of demand**:

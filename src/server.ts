@@ -23,14 +23,20 @@ function readCookie(cookieHeader: string | undefined, name: string): string | nu
   return m ? m[1] : null;
 }
 
-// Media URIs meter cheaper (see config.pointsPerMediaRequest). Mirrors the old
-// nginx $pp_media_cost map: match by file extension (images + audio/video), plus
-// Nitter's extensionless encoded media paths (/pic/<enc>, /video/<enc>, with the
-// format in the query string) by prefix. $request_uri includes the query, so the
-// trailing (?|$) anchors an extension that's immediately followed by ? or end.
-const MEDIA_EXT_RE =
-  /\.(?:jpg|jpeg|png|gif|webp|bmp|avif|mp4|webm|m4v|mov|ts|m3u8|mpd|mp3|m4a|ogg|oga|opus|wav)(?:\?|$)/i;
-const MEDIA_PREFIX_RE = /^\/(?:pic|video)\//i;
+// Three cost classes, picked from the original request URI (X-Original-URI;
+// $request_uri includes the query, so the trailing (?|$) anchors an extension
+// immediately followed by ? or end):
+//   streaming (cheapest) — audio/video: HLS/DASH segments + manifests,
+//     progressive files, piped's /videoplayback, nitter's encoded /video/<enc>.
+//     A low flat floor: the real pricing signal for these is the size-based
+//     PP_POINTS_PER_MIB component their Range/range= hints carry.
+//   media — images, incl. nitter's extensionless /pic/<enc>.
+//   default — everything else (documents, APIs).
+const STREAM_EXT_RE =
+  /\.(?:mp4|webm|m4v|mov|ts|m3u8|mpd|mp3|m4a|ogg|oga|opus|wav)(?:\?|$)/i;
+const STREAM_PREFIX_RE = /^\/(?:video\/|videoplayback(?:[/?]|$))/i;
+const MEDIA_EXT_RE = /\.(?:jpg|jpeg|png|gif|webp|bmp|avif)(?:\?|$)/i;
+const MEDIA_PREFIX_RE = /^\/pic\//i;
 
 // How many bytes a request declares it is asking for, or null when it carries
 // no size hint. Sources, in order of preference:
@@ -64,10 +70,14 @@ function requestedBytes(uri: string | undefined, rangeHeader: string | undefined
 }
 
 function costForUri(uri: string | undefined, rangeHeader?: string | undefined): number {
-  const base =
-    uri && (MEDIA_EXT_RE.test(uri) || MEDIA_PREFIX_RE.test(uri))
-      ? config.pointsPerMediaRequest
-      : config.pointsPerRequest;
+  let base = config.pointsPerRequest;
+  if (uri) {
+    if (STREAM_EXT_RE.test(uri) || STREAM_PREFIX_RE.test(uri)) {
+      base = config.pointsPerStreamRequest;
+    } else if (MEDIA_EXT_RE.test(uri) || MEDIA_PREFIX_RE.test(uri)) {
+      base = config.pointsPerMediaRequest;
+    }
+  }
   if (config.pointsPerMiB <= 0) return base;
   const bytes = requestedBytes(uri, rangeHeader);
   if (bytes === null || bytes <= 0) return base;
@@ -279,13 +289,14 @@ async function main() {
       return;
     }
     const cookie = req.header('cookie');
-    // Per-request cost. Media (images + audio/video) meters cheaper than the
-    // default so image-heavy browsing doesn't drain a budget, while a direct
-    // media scrape still costs points. Derived from the original request URI
-    // (forwarded by the gate as X-Original-URI); everything else pays the
-    // default. When PP_POINTS_PER_MIB is set, requests that declare a byte
-    // size (Range header forwarded as X-PP-Range, or piped's range=/clen=
-    // query params) additionally pay per MiB requested.
+    // Per-request cost by class (see the regexes above): streaming pays a low
+    // flat floor (its real price is the size component), images meter cheaper
+    // than documents so image-heavy browsing doesn't drain a budget, and
+    // everything else pays the default. Derived from the original request URI
+    // (forwarded by the gate as X-Original-URI). When PP_POINTS_PER_MIB is
+    // set, requests that declare a byte size (Range header forwarded as
+    // X-PP-Range, or piped's range=/clen= query params) additionally pay per
+    // MiB requested.
     const cost = costForUri(req.header('x-original-uri'), req.header('x-pp-range'));
     const dbg = (outcome: string) => {
       if (!config.debug) return;
