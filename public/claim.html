@@ -102,7 +102,7 @@
         }
         if (data.status === 'pending') {
           statusEl.textContent =
-            'Waiting for payment confirmation… (on-chain payments can take a block or two — leave this page open, or come back to this link later)';
+            'Waiting for payment confirmation… (on-chain payments need block confirmations — a few minutes for Bitcoin, ~20 for Monero. Leave this page open, or come back to this link later)';
           setTimeout(poll, 4000);
           return;
         }

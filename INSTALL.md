@@ -307,7 +307,10 @@ PP_BTCPAY_PACKAGES=[{"id":"s","label":"Starter","tokens":500,"amount":"3.00","cu
 
 In BTCPay, create a store webhook pointing at `https://<host>/pp/buy/webhook`
 with events **InvoiceSettled, InvoiceExpired, InvoiceInvalid** (the `^~ /pp/`
-location already passes it through ungated). A settled invoice mints a
+location already passes it through ungated). Payment methods are whatever the
+store enables — invoices are created without a `paymentMethods` restriction,
+so adding e.g. **Monero** (BTCPay's Monero plugin + a view-only wallet) needs
+no change here beyond the buy-page copy. A settled invoice mints a
 single-use invite code exactly once (webhook redeliveries are no-ops) and the
 buyer claims it at `/pp/claim?ct=<token>` — the claim URL is the only
 credential, so tell buyers to save it. Recovery: `node dist/admin.js

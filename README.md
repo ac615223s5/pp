@@ -163,6 +163,23 @@ setup:
    secret in `PP_BTCPAY_WEBHOOK_SECRET`. The path is reachable because nginx
    proxies `^~ /pp/` ungated.
 
+**Payment methods (incl. Monero)** are configured entirely on the BTCPay side —
+invoices offer every method the store has enabled (`createInvoice` sets no
+`paymentMethods` restriction), and the webhook/settlement flow is identical for
+all of them. To accept **Monero**, which fits this service's privacy goals
+better than transparent-chain BTC:
+
+1. Install the community **Monero plugin** in BTCPay (Server Settings →
+   Plugins) and restart.
+2. Point it at a `monerod` node and a **view-only** `monero-wallet-rpc` (the
+   BTCPay host never needs spend keys), then enable XMR on the store and set
+   its confirmation policy (XMR settles after ~10 confirmations ≈ 20 min; the
+   claim page just keeps polling until `InvoiceSettled` fires).
+3. Nothing changes in this service — packages stay priced in
+   `PP_BTCPAY_PACKAGES`' fiat/BTC currency and BTCPay converts to XMR at
+   invoice time. Update the copy in `public/buy.html` if you enable or drop
+   coins.
+
 **Flow:** buyer picks a package → `POST /pp/buy/checkout` creates the BTCPay
 invoice (its `redirectURL` points back to `/pp/claim?ct=<claim token>`) →
 buyer pays on the BTCPay checkout → the signed webhook flips the purchase
