@@ -159,8 +159,7 @@ page with the code prefilled; they just click **Activate** (the code is never
 auto-submitted, so link previews/prefetchers can't burn a draw). Or: "Visit
 `/pp/activate`, paste this code once." Tokens live in that one browser/device;
 the code's remaining balance can be drawn again on other devices/browsers, or
-after clearing site data. Codes **stack**, so a user can add more later. Users
-without a code can request one via the Matrix link on the activation page.
+after clearing site data. Codes **stack**, so a user can add more later.
 The activation form is password-manager friendly: the code field is a real
 password input (`autocomplete="current-password"`, with a "Show code" toggle),
 so managers offer to save the code on activation and autofill it on other
