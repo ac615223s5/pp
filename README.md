@@ -26,9 +26,10 @@ issuance guarantees this cryptographically.
      `geo`-whitelisted set (LAN `192.168.88.0/24`, WireGuard VPN `10.10.10.0/24`,
      localhost, monitoring egress). The IP decision lives in the service.
 - ✅ **Points-metered sessions.** A token opens/tops up a session worth
-     `pointsPerToken` (`2_000_000` here); each request draws `pointsPerRequest`
-     (`1000`) → **~2000 requests per token**. Cost stays linear in requests
-     (unlike a time window, a bot can't amortise). See *Points-metered sessions*.
+     `pointsPerToken` (`100_000` here); each request draws `pointsPerRequest`
+     (`1000`) → **~100 page requests per token** (media and streaming cost
+     less). Cost stays linear in requests (unlike a time window, a bot can't
+     amortise). See *Points-metered sessions*.
 - ✅ **Web Worker-parallelised activation** + native raw-RSA signing, so big
      quotas (~10k) are practical.
 - ✅ **Operator bypass password**, **token export/import**, **balance page**,
@@ -166,7 +167,8 @@ so managers offer to save the code on activation and autofill it on other
 devices — handy now that one code is a balance drawn everywhere.
 
 With points-metered sessions, one token covers `pointsPerToken/pointsPerRequest`
-requests (~2000 here), so a 500-token code ≈ 1M requests. Activation
+requests (~100 here), so a 500-token code ≈ 50k page requests (more of the
+cheaper media/streaming ones). Activation
 blind-signs one draw's worth of tokens in the browser (parallelised across Web
 Workers), so even huge codes activate in seconds — the balance is drawn down
 over time, not all at once.
@@ -271,7 +273,7 @@ another token to open a fresh session.
 
 - **Lazy spend.** The SW rides the cookie first (marked `X-PP-SW: 1` so nginx
   answers a drained/missing session with `401` rather than an activate redirect),
-  and only redeems a token on `401`. One token ≈ 1000 requests.
+  and only redeems a token on `401`. One token ≈ 100 page requests.
 - **Single-flight renewal.** A page load fires many requests at once, so a
   mid-load drain would 401 several of them. The SW coalesces these into **one**
   token spend (`sessionRenewal`), so a session boundary costs exactly one token,
@@ -315,8 +317,9 @@ Because the gate meters **per request**, what to exempt matters. Three classes:
   2. On any SW-visible request, if the balance is below
      `PP_SESSION_TOPUP_THRESHOLD` (default `200000` = 200 requests) the SW spends
      one token via `POST /pp/refill`, adding `pointsPerToken` to the live session.
-  3. The large per-token buffer (`2_000_000` = ~2000 requests) covers stretches of
-     pure playback when the browser has killed the idle SW and no top-up can fire.
+  3. The prefunded session — kept at or above the threshold (`200000` = two
+     tokens' worth here) — covers stretches of pure playback when the browser
+     has killed the idle SW and no top-up can fire.
 
 > Bots hitting a media link directly just `401` at nginx (no session, no token) —
 > that path needs none of the SW machinery. The top-up exists solely to keep
@@ -364,8 +367,8 @@ are exempted — they fall through to `location /` and meter.
   another browser/device (deduped, so re-importing your own pool is a no-op).
   Exported tokens are **bearer credentials** — whoever holds the text can spend
   them; the current session's points are not exported.
-- **Refill buffer:** once the pool is within `PP_REFILL_BUFFER_REQUESTS` (`6000`
-  here, ≈ 3 tokens) of empty, the SW steers new **navigations** to
+- **Refill buffer:** once the pool is within `PP_REFILL_BUFFER_REQUESTS` (`500`
+  here, ≈ 5 tokens) of empty, the SW steers new **navigations** to
   `/pp/activate?refill=1&return=<path>` while still serving **sub-resources**
   from the buffer — so in-flight page loads finish and the pool tops up early.
 - **Exhaustion is graceful:** truly out of tokens, a navigation redirects to
