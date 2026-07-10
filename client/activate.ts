@@ -535,5 +535,33 @@ async function init() {
       })
       .catch(() => {});
   }
+
+  // Issuer-key transparency: unlinkability assumes every user is signed by the
+  // SAME key — a per-user key would let the operator partition redemptions.
+  // Show the key's SHA-256 fingerprint (no code needed; /pp/token-key is
+  // public) so users can compare it across devices and with each other.
+  void showKeyFingerprint();
+}
+
+async function showKeyFingerprint(): Promise<void> {
+  const line = document.getElementById('keyline');
+  const fp = document.getElementById('key-fp');
+  if (!line || !fp || !crypto.subtle) return;
+  try {
+    const dir = await (await fetch('/pp/token-key')).json();
+    const b64 = dir['token-keys'][0]['token-key'] as string;
+    const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+    const bin = atob(b64.replace(/-/g, '+').replace(/_/g, '/') + pad);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    // SHA-256 of the token-key — the same value RFC 9578 uses as token_key_id.
+    const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    fp.textContent = Array.from(hash, (b) => b.toString(16).padStart(2, '0'))
+      .join('')
+      .replace(/(.{8})(?=.)/g, '$1 ');
+    line.hidden = false;
+  } catch {
+    // Informative only — never block activation on it.
+  }
 }
 init();

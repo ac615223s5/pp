@@ -50,6 +50,7 @@
       .ok { color: #157347; }
       .err { color: #b02a37; }
       small { opacity: 0.7; }
+      #key-fp { word-break: break-all; }
     </style>
   </head>
   <body>
@@ -109,6 +110,16 @@
       </form>
     </details>
     <p><small>Clearing site data, or using a new device/browser, needs a new code.</small></p>
+    <!-- unhidden by activate.js once the fingerprint is computed; needs no code -->
+    <p id="keyline" hidden>
+      <small
+        >Issuer key fingerprint: <code id="key-fp"></code><br />
+        Anonymity assumes everyone is issued tokens under the <em>same</em> key.
+        This fingerprint should be identical on all your devices and for other
+        users of this site — if yours differs, the operator may be giving you a
+        personal key to track you.</small
+      >
+    </p>
     <script src="/pp/activate.js"></script>
   </body>
 </html>

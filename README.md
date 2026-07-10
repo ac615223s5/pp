@@ -434,11 +434,27 @@ service by copying that block onto its upstream — or follow [`INSTALL.md`](./I
 
 - The issuer never persists or logs blinded values, tokens, IPs, or user agents
   alongside invite codes. Redemptions are unlinkable to issuance by construction.
+- **What an unmodified client guarantees by itself, regardless of the
+  operator:** blinding happens in the browser, so no matter what the server
+  logs, a redeemed token cannot be matched to any issuance record — using
+  tokens reveals nothing beyond what visiting an ungated site already would
+  (IP, timing, the pages fetched), plus the coarse fact that some code drew N
+  tokens at some time. IP correlation is a property of HTTP, not of this
+  system; network-layer anonymity needs Tor/VPN here as anywhere. The two
+  assumptions this rests on are client-checkable: the issuer key is the same
+  for everyone (fingerprint shown on the activation page, no code needed) and
+  draws are batched ahead of need (the client builds the batch itself, so it
+  always knows how many tokens it drew and when).
 - The spent-set stores only a SHA-256 of each redeemed token — no token values,
   no client identifiers.
 - Residual metadata risk: with a tiny user set, IP/timing correlation is possible;
   the anonymity set grows with users. Tokens can be shared/exported by design and
   cannot be revoked once issued (only unused *codes* can be revoked).
+- **Same-key assumption:** unlinkability holds only if every user is signed by
+  the same issuer key — a per-user key would let the operator partition
+  redemptions. `/pp/token-key` is public (no code needed) and the activation
+  page shows the key's SHA-256 fingerprint (= RFC 9578 `token_key_id`), so
+  users can compare it across devices and with each other out-of-band.
 - **Session linkability:** requests within one session share a cookie and are
   mutually linkable (~`pointsPerToken/pointsPerRequest` of them); session ids are
   random and never derived from the token, so sessions stay unlinkable to each
