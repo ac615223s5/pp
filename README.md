@@ -315,11 +315,13 @@ Because the gate meters **per request**, what to exempt matters. Three classes:
   1. nginx surfaces the balance as `X-PP-Points` (`auth_request_set` +
      `add_header`) on every gated response.
   2. On any SW-visible request, if the balance is below
-     `PP_SESSION_TOPUP_THRESHOLD` (default `200000` = 200 requests) the SW spends
+     `PP_SESSION_TOPUP_THRESHOLD` (default `30000` ≈ a third of a token — ~1200
+     flat-cost stream requests, or ~1 GiB of ranged video at the example
+     per-MiB rate) the SW spends
      one token via `POST /pp/refill`, adding `pointsPerToken` to the live session.
-  3. The prefunded session — kept at or above the threshold (`200000` = two
-     tokens' worth here) — covers stretches of pure playback when the browser
-     has killed the idle SW and no top-up can fire.
+  3. The prefunded session — kept at or above that threshold — covers stretches
+     of pure playback when the browser has killed the idle SW and no top-up can
+     fire; raise the threshold (globally or per host) for longer unattended runway.
 
 > Bots hitting a media link directly just `401` at nginx (no session, no token) —
 > that path needs none of the SW machinery. The top-up exists solely to keep

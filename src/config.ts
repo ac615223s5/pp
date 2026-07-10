@@ -137,8 +137,9 @@ export const config = {
   // balance drops below this, the SW spends a token to add pointsPerToken to it
   // — keeping it funded for SW-invisible media (video/audio) that rides the
   // session at the nginx gate but can't trigger the SW's reactive renewal.
-  // Default 200_000 = 200 requests of headroom at the 1_000/request rate.
-  sessionTopUpThreshold: Number(process.env.PP_SESSION_TOPUP_THRESHOLD ?? 200_000),
+  // Default 30_000 = 30 page requests of headroom at the 1_000/request rate,
+  // or ~1200 stream requests at the flat 25/request class cost.
+  sessionTopUpThreshold: Number(process.env.PP_SESSION_TOPUP_THRESHOLD ?? 30_000),
   // Per-host overrides for the top-up threshold, keyed by lowercase hostname.
   // The SW reads the threshold from /pp/config on its own origin, so raising it
   // for one host makes that host's SW bank a bigger session (many tokens'
